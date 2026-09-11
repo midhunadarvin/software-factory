@@ -55,6 +55,7 @@ export const jobs = sqliteTable(
     lockedAt: text("locked_at"),
     lockedBy: text("locked_by"),
     tokensUsed: integer("tokens_used").notNull().default(0),
+    model: text("model"),
     implStartedAt: text("impl_started_at"),
     archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull(),

@@ -81,6 +81,11 @@ CREATE INDEX IF NOT EXISTS agent_events_project_created_idx ON agent_events(proj
 export function migrate(): void {
   const sqlite = getSqlite();
   sqlite.exec(DDL);
+  try {
+    sqlite.exec("ALTER TABLE jobs ADD COLUMN model text");
+  } catch {
+    /* already present */
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

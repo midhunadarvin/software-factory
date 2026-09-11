@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 export function loadDotenv() {
-  const file = path.join(process.cwd(), ".env");
+  const root = process.env.FACTORY_ROOT || process.cwd();
+  const file = path.join(root, ".env");
   if (!fs.existsSync(file)) return;
   for (const line of fs.readFileSync(file, "utf8").split("\n")) {
     const trimmed = line.trim();

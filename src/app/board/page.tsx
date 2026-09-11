@@ -2,8 +2,13 @@
 
 import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import { FolderGit2, Plus, Settings2 } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import { Kanban } from "@/components/Kanban";
+import { AppHeader } from "@/components/AppChrome";
+import { AgentGate } from "@/components/AgentGate";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 function BoardInner() {
   const params = useSearchParams();
@@ -28,6 +33,8 @@ function BoardInner() {
     };
     es.addEventListener("job.upsert", () => void cards.refetch());
     es.addEventListener("job.approval_needed", () => void cards.refetch());
+    es.addEventListener("lane.agent.start", () => void cards.refetch());
+    es.addEventListener("lane.agent.end", () => void cards.refetch());
     return () => es.close();
   }, [projectId, cards]);
 
@@ -38,20 +45,31 @@ function BoardInner() {
   const project = projects.data?.find((p) => p.id === projectId);
 
   return (
-    <div>
-      <div className="nav">
-        <div className="row">
-          <strong>Software Factory</strong>
-          <span className="muted">{project?.name}</span>
-        </div>
-        <div className="row">
-          <a href="/open">Switch repo</a>
-          <a href={`/settings?project=${projectId}`}>Settings</a>
-        </div>
-      </div>
-      <div className="shell" style={{ maxWidth: "none", margin: "16px" }}>
+    <div className="flex min-h-screen flex-col">
+      <AppHeader
+        left={
+          <span className="hidden truncate text-sm text-muted-foreground sm:inline">
+            {project?.name}
+          </span>
+        }
+        right={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => router.push("/open")}>
+              <FolderGit2 />
+              Repos
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => router.push(`/settings?project=${projectId}`)}>
+              <Settings2 />
+              Settings
+            </Button>
+          </>
+        }
+      />
+
+      <AgentGate>
+      <div className="mx-auto w-full max-w-[1600px] px-4 pt-5">
         <form
-          className="row"
+          className="flex flex-col gap-2 rounded-xl border border-border bg-card p-2 shadow-xs sm:flex-row sm:items-center"
           onSubmit={(e) => {
             e.preventDefault();
             if (!title.trim()) return;
@@ -60,24 +78,36 @@ function BoardInner() {
             setBody("");
           }}
         >
-          <input
+          <Input
+            className="border-0 shadow-none focus-visible:ring-0"
             placeholder="New job title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
           />
-          <input placeholder="Brief" value={body} onChange={(e) => setBody(e.target.value)} />
-          <button className="primary" type="submit">
+          <Input
+            className="border-0 shadow-none focus-visible:ring-0"
+            placeholder="Brief requirements…"
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+          />
+          <Button type="submit" disabled={create.isPending} className="shrink-0">
+            <Plus />
             Create job
-          </button>
+          </Button>
         </form>
       </div>
+
       {(cards.data?.length ?? 0) === 0 ? (
-        <div className="shell">
-          <p className="muted">No jobs yet. Create a job, or label a GitHub issue `factory`.</p>
+        <div className="mx-auto max-w-md px-4 py-24 text-center">
+          <p className="text-sm font-medium">No jobs on the line</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Create a job above, or label a GitHub issue <code className="rounded bg-muted px-1">factory</code>.
+          </p>
         </div>
       ) : (
         <Kanban projectId={projectId} cards={cards.data ?? []} />
       )}
+      </AgentGate>
     </div>
   );
 }

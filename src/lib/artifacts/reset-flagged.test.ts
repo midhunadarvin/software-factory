@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { nextPending, pathHit, resetFlaggedTasks } from "./reset-flagged";
+import { nextPending, nextStageAfterTask, pathHit, resetFlaggedTasks } from "./reset-flagged";
 import type { ReviewReport, TaskGraph } from "./schemas";
 
 const graph: TaskGraph = {
@@ -60,5 +60,14 @@ describe("resetFlaggedTasks", () => {
       tasks: graph.tasks.map((t) => (t.id === "T-2" ? { ...t, status: "pending" as const } : t)),
     };
     expect(nextPending(pending)?.id).toBe("T-2");
+  });
+
+  it("leaves implementation when a later task is still pending", () => {
+    const pending = {
+      ...graph,
+      tasks: graph.tasks.map((t) => (t.id === "T-2" ? { ...t, status: "pending" as const } : t)),
+    };
+    expect(nextStageAfterTask(pending)).toBe("implementation");
+    expect(nextStageAfterTask(graph)).toBe("review_draft");
   });
 });

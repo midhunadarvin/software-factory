@@ -4,6 +4,7 @@ import { z } from "zod";
 import { agentEvents, artifacts, jobs } from "../../db/schema";
 import {
   FunctionalRequirementsSchema,
+  PullRequestDraftSchema,
   TaskGraphSchema,
   TechnicalSpecSchema,
 } from "../../artifacts/schemas";
@@ -11,20 +12,30 @@ import { resetFlaggedTasks } from "../../artifacts/reset-flagged";
 import { loadLatestArtifact, writeArtifact } from "../../artifacts/store";
 import { nowIso } from "../../paths";
 import { gcWorktree, getRuntime, retryImplementation } from "../../runtime";
-import { badgeFor, gateForState, nextStateForApprove } from "../../runtime/types";
+import { badgeFor, columnForState, gateForState, nextStateForApprove } from "../../runtime/types";
+import { TriageReportSchema } from "../../artifacts/schemas";
 import { addJobWorktree, branchName } from "../../git/worktree";
 import { projects } from "../../db/schema";
 import { randomUUID } from "node:crypto";
+import { requireAgent } from "../require-agent";
+import { getSession, getSessionBundle } from "../../runtime/session-store";
+import { getJobModel, setJobModel } from "../../runtime/llm";
+import { displayLaneName, laneForJobState } from "../../runtime/ticket";
 import { protectedProcedure, router } from "../init";
 
-function cardOf(j: typeof jobs.$inferSelect, queued = false) {
+function cardOf(
+  j: typeof jobs.$inferSelect,
+  queued = false,
+  triage?: { classification: string; risk: string; fastTrack: boolean },
+) {
   return {
     id: j.id,
     projectId: j.projectId,
     issueNumber: j.issueNumber,
     title: j.issueTitle,
     state: j.state,
-    column: j.boardColumn,
+    column: columnForState(j.state, j.lastActiveState, j.boardColumn),
+    model: j.model ?? getJobModel(j.id),
     badge: badgeFor(j.state, queued),
     local: j.issueNumber < 0,
     issueUrl: j.issueUrl,
@@ -34,6 +45,7 @@ function cardOf(j: typeof jobs.$inferSelect, queued = false) {
     branch: j.branch,
     prUrl: j.prUrl,
     error: j.error,
+    triage,
   };
 }
 
@@ -41,6 +53,7 @@ function parseArtifactForGate(gate: string, raw: unknown) {
   if (gate === "requirements") return FunctionalRequirementsSchema.parse(raw);
   if (gate === "tech_spec") return TechnicalSpecSchema.parse(raw);
   if (gate === "tasks") return TaskGraphSchema.parse(raw);
+  if (gate === "pr") return PullRequestDraftSchema.parse(raw);
   throw new Error("no client artifact for review");
 }
 
@@ -51,6 +64,14 @@ export const jobsRouter = router({
       const id = await getRuntime().createLocalJob(input.projectId, input.title, input.body);
       return { id };
     }),
+  sendToTriage: protectedProcedure
+    .input(z.object({ id: z.string(), model: z.string().min(1).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      await requireAgent();
+      const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      return getRuntime().sendToTriage(input.id, input.model);
+    }),
   list: protectedProcedure
     .input(z.object({ projectId: z.string(), states: z.array(z.string()).optional() }))
     .query(async ({ ctx, input }) => {
@@ -59,10 +80,141 @@ export const jobsRouter = router({
         .from(jobs)
         .where(and(eq(jobs.projectId, input.projectId), isNull(jobs.archivedAt)));
       const queued = getRuntime().queue.queued > 0;
+      const triageByJob = new Map<string, { classification: string; risk: string; fastTrack: boolean }>();
+      if (rows.length) {
+        const triages = await ctx.db
+          .select()
+          .from(artifacts)
+          .where(eq(artifacts.kind, "triage"));
+        for (const row of triages) {
+          const parsed = TriageReportSchema.safeParse(JSON.parse(row.body));
+          if (!parsed.success) continue;
+          const prev = triageByJob.get(row.jobId);
+          if (!prev) triageByJob.set(row.jobId, parsed.data);
+        }
+      }
+      const runtime = getRuntime();
       return rows
         .filter((j) => !input.states || input.states.includes(j.state))
-        .map((j) => cardOf(j, queued && j.state === "inbox"));
+        .map((j) => {
+          const card = cardOf(j, queued && (j.state === "inbox" || j.state === "triage"), triageByJob.get(j.id));
+          const live = getSessionBundle(j.id, { refresh: true }).current;
+          const currentLane = laneForJobState(j.state)?.key ?? j.state;
+          const liveMatchesColumn = Boolean(live?.lane && laneForJobState(live.lane)?.column === card.column);
+          const awaiting = j.state.startsWith("awaiting_");
+          const finished = j.state === "done" || card.column === "done";
+          const running =
+            !awaiting &&
+            !finished &&
+            (runtime.isJobRunning(j.id) || (live?.status === "running" && liveMatchesColumn));
+          const agent =
+            finished
+              ? ("completed" as const)
+              : awaiting
+                ? ("idle" as const)
+                : running
+                  ? ("running" as const)
+                  : j.state === "failed" || (liveMatchesColumn && live?.status === "error")
+                    ? ("failed" as const)
+                    : liveMatchesColumn && live?.status === "done"
+                      ? ("completed" as const)
+                      : ("idle" as const);
+          return {
+            ...card,
+            agent,
+            agentLane: displayLaneName(currentLane),
+          };
+        });
     }),
+  session: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    const bundle = getSessionBundle(input.id);
+    const live = bundle.current ?? getSession(input.id);
+    const running =
+      job.state !== "done" &&
+      !job.state.startsWith("awaiting_") &&
+      (getRuntime().isJobRunning(input.id) || live?.status === "running");
+    const status = (
+      job.state === "done"
+        ? "done"
+        : (live?.status ?? (job.error ? "error" : running ? "running" : "idle"))
+    ) as "running" | "done" | "error" | "idle";
+    const recentEvents = await ctx.db
+      .select()
+      .from(agentEvents)
+      .where(eq(agentEvents.jobId, input.id))
+      .orderBy(desc(agentEvents.createdAt))
+      .limit(20);
+    return {
+      jobId: input.id,
+      projectId: job.projectId,
+      lane: displayLaneName(job.state),
+      sessionLane: live?.lane ?? job.state,
+      status,
+      thinking: live?.thinking ?? "",
+      text: live?.text ?? "",
+      tools: live?.tools ?? [],
+      error: live?.error ?? job.error ?? undefined,
+      running,
+      model: live?.model ?? getJobModel(input.id),
+      updatedAt: live?.updatedAt,
+      risk: live?.risk,
+      classification: live?.classification,
+      history: bundle.history,
+      debug: {
+        jobState: job.state,
+        lastActiveState: job.lastActiveState,
+        boardColumn: job.boardColumn,
+        jobError: job.error,
+        sessionError: live?.error,
+        sessionId: live?.id,
+        tools: live?.tools ?? [],
+        events: recentEvents.reverse().map((e) => ({
+          id: e.id,
+          level: e.level,
+          event: e.event,
+          payload: e.payload,
+          createdAt: e.createdAt,
+        })),
+      },
+    };
+  }),
+  setModel: protectedProcedure
+    .input(z.object({ id: z.string(), model: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      setJobModel(input.id, input.model);
+      return { ok: true, model: getJobModel(input.id) };
+    }),
+  stop: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    await getRuntime().stopAgent(input.id);
+    return { ok: true };
+  }),
+  restartFrom: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        step: z.enum(["intake", "triage", "planning", "tech_spec", "tasks", "implementation", "review"]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await requireAgent();
+      const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      await getRuntime().restartFromStep(input.id, input.step);
+      return { ok: true };
+    }),
+  retrySession: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    await requireAgent();
+    const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    await getRuntime().retryLane(input.id);
+    return { ok: true };
+  }),
   get: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     const j = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
     if (!j) throw new TRPCError({ code: "NOT_FOUND" });
@@ -73,7 +225,22 @@ export const jobsRouter = router({
     } catch {
       interrupt = null;
     }
-    return { ...cardOf(j), issueBody: j.issueBody, pendingArtifact: j.pendingArtifact, interrupt };
+    const triageRow = (
+      await ctx.db
+        .select()
+        .from(artifacts)
+        .where(and(eq(artifacts.jobId, j.id), eq(artifacts.kind, "triage")))
+        .orderBy(desc(artifacts.createdAt))
+        .limit(1)
+    )[0];
+    const triageParsed = triageRow ? TriageReportSchema.safeParse(JSON.parse(triageRow.body)) : null;
+    return {
+      ...cardOf(j, false, triageParsed?.success ? triageParsed.data : undefined),
+      issueBody: j.issueBody,
+      pendingArtifact: j.pendingArtifact,
+      worktreePath: j.worktreePath,
+      interrupt,
+    };
   }),
   artifacts: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     return ctx.db
@@ -101,6 +268,7 @@ export const jobsRouter = router({
         action: z.enum(["approve", "reject", "send_back"]),
         artifact: z.unknown().optional(),
         note: z.string().max(4000).optional(),
+        draft: z.boolean().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -156,6 +324,18 @@ export const jobsRouter = router({
           await runtime.resume(job.id, { action: "approve", note: input.note });
           return;
         }
+        if (gate === "pr") {
+          const latest = await loadLatestArtifact(job.id, "pr");
+          const parsed = parseArtifactForGate("pr", input.artifact ?? latest?.parsed);
+          await writeArtifact({ jobId: job.id, kind: "pr", source: "human", body: parsed });
+          await runtime.resume(job.id, {
+            action: "approve",
+            artifact: parsed,
+            note: input.note,
+            draft: input.draft,
+          });
+          return;
+        }
         const latestKind =
           gate === "requirements" ? "fr" : gate === "tech_spec" ? "tech_spec" : "task_graph";
         const latest = await loadLatestArtifact(job.id, latestKind);
@@ -168,7 +348,7 @@ export const jobsRouter = router({
   pause: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
     const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
     if (!job) throw new TRPCError({ code: "NOT_FOUND" });
-    if (job.state.startsWith("awaiting_") || job.state === "inbox") return { ok: true };
+    if (job.state.startsWith("awaiting_") || job.state === "inbox" || job.state === "intake") return { ok: true };
     await ctx.db
       .update(jobs)
       .set({ state: "paused", updatedAt: nowIso(), lockedAt: null, lockedBy: null })
@@ -192,6 +372,13 @@ export const jobsRouter = router({
     await ctx.db.update(jobs).set({ archivedAt: nowIso() }).where(eq(jobs.id, input.id));
     return { ok: true };
   }),
+  delete: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    if (job.archivedAt) return { ok: true };
+    await getRuntime().deleteJob(job.id);
+    return { ok: true };
+  }),
   reopen: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
     const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
     if (!job) throw new TRPCError({ code: "NOT_FOUND" });
@@ -211,9 +398,9 @@ export const jobsRouter = router({
       issueTitle: job.issueTitle,
       issueBody: job.issueBody,
       issueUrl: job.issueUrl,
-      state: "inbox",
-      lastActiveState: "inbox",
-      boardColumn: "requirements",
+      state: "intake",
+      lastActiveState: "intake",
+      boardColumn: "intake",
       branch,
       createdAt: now,
       updatedAt: now,
@@ -226,8 +413,6 @@ export const jobsRouter = router({
       defaultBranch: project.defaultBranch,
     });
     await ctx.db.update(jobs).set({ worktreePath: dest }).where(eq(jobs.id, id));
-    const created = (await ctx.db.select().from(jobs).where(eq(jobs.id, id)))[0]!;
-    void getRuntime().invokeJob(created, "first");
     return { id };
   }),
   retryImplementation: protectedProcedure

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TaskGraphSchema } from "./schemas";
+import { TaskGraphSchema, triageFastTrack } from "./schemas";
 
 describe("TaskGraphSchema", () => {
   it("rejects cycles", () => {
@@ -11,6 +11,12 @@ describe("TaskGraphSchema", () => {
       ],
     });
     expect(r.success).toBe(false);
+  });
+
+  it("fast-tracks only simple + low risk", () => {
+    expect(triageFastTrack({ classification: "simple", risk: "low" })).toBe(true);
+    expect(triageFastTrack({ classification: "simple", risk: "high" })).toBe(false);
+    expect(triageFastTrack({ classification: "complex", risk: "low" })).toBe(false);
   });
 
   it("accepts a valid dag", () => {

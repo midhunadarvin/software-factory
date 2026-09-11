@@ -43,3 +43,8 @@ export function nextPending(graph: TaskGraph) {
     }) ?? null
   );
 }
+
+/** After a task is marked done, either run the next one or leave implementation. */
+export function nextStageAfterTask(graph: TaskGraph): "implementation" | "review_draft" {
+  return nextPending(graph) ? "implementation" : "review_draft";
+}

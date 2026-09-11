@@ -64,8 +64,24 @@ export function llmConfigured(): boolean {
   return Boolean(process.env.XAI_API_KEY || process.env.OPENAI_API_KEY);
 }
 
+/** Strip endpoint suffixes so the SDK can append /models or /chat/completions. */
+export function normalizeLlmBaseUrl(raw: string): string {
+  const trimmed = raw.trim();
+  try {
+    const parsed = new URL(trimmed);
+    parsed.pathname = parsed.pathname
+      .replace(/\/+$/, "")
+      .replace(/\/(chat\/completions|responses|models)$/i, "");
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return trimmed.replace(/\/+$/, "").replace(/\/(chat\/completions|responses|models)$/i, "");
+  }
+}
+
 export function llmBaseUrl(): string {
-  return process.env.OPENAI_COMPAT_BASE_URL ?? "https://api.x.ai/v1";
+  return normalizeLlmBaseUrl(process.env.OPENAI_COMPAT_BASE_URL ?? "https://api.x.ai/v1");
 }
 
 export function llmModel(): string {

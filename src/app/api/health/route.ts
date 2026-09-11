@@ -1,8 +1,8 @@
 import { getSqlite } from "@/lib/db/client";
 import { projects } from "@/lib/db/schema";
-import { llmConfigured } from "@/lib/env";
 import { gitOk } from "@/lib/git/exec";
 import { getDb } from "@/lib/db/client";
+import { getAgentStatus } from "@/lib/runtime/agent-status";
 
 export const runtime = "nodejs";
 
@@ -16,10 +16,12 @@ export async function GET() {
   } catch {
     dbOk = false;
   }
+  const agent = await getAgentStatus();
   return Response.json({
-    ok: dbOk,
+    ok: dbOk && agent.ready,
     db: dbOk,
-    llmConfigured: llmConfigured(),
+    llmConfigured: agent.configured,
+    agent,
     secretConfigured: Boolean(process.env.FACTORY_SECRET),
     gitOk: await gitOk(),
     projects: count,

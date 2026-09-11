@@ -101,7 +101,7 @@ export async function createPullRequest(
   pat: string,
   owner: string,
   repo: string,
-  input: { title: string; body: string; head: string; base: string },
+  input: { title: string; body: string; head: string; base: string; draft?: boolean },
 ) {
   return gh(pat, "POST", `/repos/${owner}/${repo}/pulls`, input);
 }
@@ -112,7 +112,11 @@ export async function findPullRequest(
   repo: string,
   head: string,
 ) {
-  const r = await gh(pat, "GET", `/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=open`);
+  const r = await gh(
+    pat,
+    "GET",
+    `/repos/${owner}/${repo}/pulls?head=${encodeURIComponent(`${owner}:${head}`)}&state=open`,
+  );
   const list = (r.json as { html_url: string; number: number }[]) ?? [];
   return list[0] ?? null;
 }

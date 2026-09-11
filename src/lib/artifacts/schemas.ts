@@ -139,4 +139,25 @@ export const ReviewReportSchema = z.object({
 });
 export type ReviewReport = z.infer<typeof ReviewReportSchema>;
 
-export type ArtifactKind = "fr" | "tech_spec" | "task_graph" | "review";
+export const TriageReportSchema = z.object({
+  version: z.literal(1),
+  classification: z.enum(["simple", "complex"]),
+  risk: z.enum(["low", "medium", "high"]),
+  rationale: z.string().min(1).max(4000),
+  affectedAreas: z.array(z.string()).max(20).default([]),
+  fastTrack: z.boolean(),
+});
+export type TriageReport = z.infer<typeof TriageReportSchema>;
+
+export function triageFastTrack(t: Pick<TriageReport, "classification" | "risk">): boolean {
+  return t.classification === "simple" && t.risk === "low";
+}
+
+export const PullRequestDraftSchema = z.object({
+  version: z.literal(1),
+  title: z.string().min(1).max(200),
+  body: z.string().min(1).max(20_000),
+});
+export type PullRequestDraft = z.infer<typeof PullRequestDraftSchema>;
+
+export type ArtifactKind = "triage" | "fr" | "tech_spec" | "task_graph" | "review" | "context" | "pr";

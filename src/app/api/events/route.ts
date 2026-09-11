@@ -5,6 +5,7 @@ import { agentEvents, projects } from "@/lib/db/schema";
 import { bus } from "@/lib/runtime/events";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 export async function GET(req: Request) {
   const cookie = req.headers.get("cookie") ?? "";
@@ -14,6 +15,7 @@ export async function GET(req: Request) {
   }
   const url = new URL(req.url);
   const projectId = url.searchParams.get("projectId");
+  const jobId = url.searchParams.get("jobId");
   if (!projectId) return new Response("projectId required", { status: 400 });
   const p = (await getDb().select().from(projects).where(eq(projects.id, projectId)))[0];
   if (!p) return new Response("not found", { status: 404 });
@@ -39,11 +41,32 @@ export async function GET(req: Request) {
             .limit(50)
             .then((r) => r.reverse());
       for (const e of replay) {
-        send(e.id, e.event, { payload: e.payload, jobId: e.jobId });
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(e.payload) as Record<string, unknown>;
+        } catch {
+          parsed = { payload: e.payload };
+        }
+        send(e.id, e.event, { ...parsed, jobId: e.jobId });
       }
-      const onEvent = (e: { id: string; type: string; data: unknown; projectId: string }) => {
+      if (jobId) {
+        const { getSession } = await import("@/lib/runtime/session-store");
+        const live = getSession(jobId);
+        if (live) send(`session-${jobId}`, "agent.session", live);
+      }
+      const onEvent = (e: {
+        id: string;
+        type: string;
+        data: unknown;
+        projectId: string;
+        jobId?: string | null;
+      }) => {
         if (e.projectId !== projectId) return;
-        send(e.id, e.type, e.data);
+        const data =
+          e.data && typeof e.data === "object"
+            ? { jobId: e.jobId, ...(e.data as object) }
+            : { jobId: e.jobId, payload: e.data };
+        send(e.id, e.type, data);
       };
       bus.on(`project:${projectId}`, onEvent);
       const keep = setInterval(() => controller.enqueue(encoder.encode(`: ping\n\n`)), 15_000);
@@ -57,8 +80,9 @@ export async function GET(req: Request) {
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }

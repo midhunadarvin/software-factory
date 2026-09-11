@@ -1,10 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-export const FACTORY_ROOT = path.resolve(
-  process.env.FACTORY_ROOT ?? path.resolve(process.cwd()),
-);
+const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+export const FACTORY_ROOT = path.resolve(process.env.FACTORY_ROOT ?? MODULE_ROOT);
 
 export function varDir(): string {
   const dir = path.join(FACTORY_ROOT, "var");
@@ -22,6 +23,22 @@ export function checkpointsSqlitePath(): string {
 
 export function runtimeLockPath(): string {
   return path.join(varDir(), "factory.runtime.lock");
+}
+
+export function sessionsDir(): string {
+  const dir = path.join(varDir(), "sessions");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function sessionFilePath(jobId: string): string {
+  return path.join(sessionsDir(), `${jobId}.json`);
+}
+
+export function invokePayloadPath(jobId: string): string {
+  const dir = path.join(varDir(), "invokes");
+  fs.mkdirSync(dir, { recursive: true });
+  return path.join(dir, `${jobId}.json`);
 }
 
 export function worktreePath(projectId: string, jobId: string): string {

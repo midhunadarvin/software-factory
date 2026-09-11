@@ -14,12 +14,12 @@ if (existing.length === 0) {
 const project = existing[0]!;
 const now = nowIso();
 const states = [
-  ["inbox", "requirements"],
-  ["awaiting_requirements_approval", "requirements"],
+  ["triage", "triage"],
+  ["awaiting_requirements_approval", "planning"],
   ["awaiting_tech_spec_approval", "tech_spec"],
+  ["awaiting_tasks_approval", "tasks"],
   ["implementation", "implementation"],
-  ["awaiting_review_approval", "review"],
-  ["done", "pull_request"],
+  ["awaiting_review_approval", "pull_request"],
 ] as const;
 let n = -100;
 for (const [state, col] of states) {

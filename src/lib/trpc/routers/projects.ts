@@ -19,6 +19,7 @@ import {
 import { defaultCloneDest } from "../../paths";
 import { nowIso } from "../../paths";
 import { getRuntime, gcWorktree } from "../../runtime";
+import { requireAgent } from "../require-agent";
 import { protectedProcedure, router } from "../init";
 
 function publicProject(p: typeof projects.$inferSelect) {
@@ -59,6 +60,7 @@ export const projectsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireAgent();
       const v = await validateGitPath(input.rootPath);
       if (!v.ok) throw new TRPCError({ code: "BAD_REQUEST", message: v.error ?? "invalid path" });
       const abs = path.resolve(input.rootPath);
@@ -110,6 +112,7 @@ export const projectsRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await requireAgent();
       const parsed = parseRepoUrl(input.repoUrl);
       const dest = path.resolve(input.destPath || defaultCloneDest(parsed.owner, parsed.repo));
       fs.mkdirSync(path.dirname(dest), { recursive: true });
