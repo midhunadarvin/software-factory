@@ -24,6 +24,8 @@ export const projects = sqliteTable(
     githubPatIv: blob("github_pat_iv", { mode: "buffer" }),
     githubPatTag: blob("github_pat_tag", { mode: "buffer" }),
     pollEnabled: integer("poll_enabled").notNull().default(0),
+    pipeline: text("pipeline"),
+    intake: text("intake"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -56,6 +58,8 @@ export const jobs = sqliteTable(
     lockedBy: text("locked_by"),
     tokensUsed: integer("tokens_used").notNull().default(0),
     model: text("model"),
+    source: text("source").notNull().default("local"),
+    externalKey: text("external_key"),
     implStartedAt: text("impl_started_at"),
     archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull(),
@@ -71,6 +75,9 @@ export const jobs = sqliteTable(
     index("jobs_project_state_idx").on(t.projectId, t.state),
     index("jobs_project_issue_idx").on(t.projectId, t.issueNumber),
     index("jobs_project_col_idx").on(t.projectId, t.boardColumn),
+    uniqueIndex("jobs_external_key_uq")
+      .on(t.projectId, t.externalKey)
+      .where(sql`archived_at IS NULL AND external_key IS NOT NULL`),
   ],
 );
 

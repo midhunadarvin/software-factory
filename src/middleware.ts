@@ -2,11 +2,22 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const SESSION_COOKIE = "factory_session";
-const PUBLIC = ["/login", "/api/health", "/api/login", "/api/trpc/auth.login", "/api/trpc/auth.me"];
+const PUBLIC = [
+  "/login",
+  "/api/health",
+  "/api/login",
+  "/api/trpc/auth.login",
+  "/api/trpc/auth.me",
+  "/api/webhooks",
+];
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (PUBLIC.some((p) => pathname === p || pathname.startsWith("/api/trpc/auth."))) {
+  if (
+    PUBLIC.some((p) => pathname === p || pathname.startsWith(`${p}/`)) ||
+    pathname.startsWith("/api/trpc/auth.") ||
+    pathname.startsWith("/api/webhooks/")
+  ) {
     return NextResponse.next();
   }
   if (pathname.startsWith("/_next") || pathname === "/favicon.ico") {

@@ -1,0 +1,23 @@
+services:
+  factory:
+    build: .
+    image: software-factory:local
+    ports:
+      - "${FACTORY_PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      FACTORY_BIND: 0.0.0.0:3000
+      FACTORY_REPOS_DIR: /repos
+      FACTORY_ROOT: /app
+    volumes:
+      # SQLite, LangGraph checkpoints, job worktrees, session logs
+      - factory-data:/app/var
+      # Git checkouts the factory attaches to or clones into.
+      # Bind a host folder with FACTORY_HOST_REPOS=/absolute/path/to/repos
+      - ${FACTORY_HOST_REPOS:-factory-repos}:/repos
+    restart: unless-stopped
+
+volumes:
+  factory-data:
+  factory-repos:

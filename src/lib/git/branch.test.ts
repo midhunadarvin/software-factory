@@ -10,6 +10,8 @@ import {
   isDefaultBranch,
   isFactoryArtifactPath,
   isFeatureBranch,
+  normalizeBranch,
+  porcelainPath,
   productStatus,
 } from "./branch";
 
@@ -32,6 +34,16 @@ async function initRepo() {
 }
 
 describe("isFeatureBranch", () => {
+  it("normalizes refs/heads and treats HEAD as the default checkout", () => {
+    expect(normalizeBranch("refs/heads/feat/x")).toBe("feat/x");
+    expect(isDefaultBranch("HEAD", "main")).toBe(true);
+    expect(isDefaultBranch("refs/heads/main", "main")).toBe(true);
+    expect(isFactoryArtifactPath(".factory/issues/1/review.md")).toBe(true);
+    expect(isFactoryArtifactPath("src/app.ts")).toBe(false);
+    expect(porcelainPath(" M src/a.ts")).toBe("src/a.ts");
+    expect(porcelainPath("R  old.ts -> new.ts")).toBe("new.ts");
+  });
+
   it("treats main/master/develop as default, factory/* as feature", () => {
     expect(isDefaultBranch("main", "main")).toBe(true);
     expect(isDefaultBranch("master", "develop")).toBe(true);

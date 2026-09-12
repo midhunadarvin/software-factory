@@ -85,6 +85,7 @@ function SessionInner() {
   const router = useRouter();
   const job = trpc.jobs.get.useQuery({ id }, { refetchInterval: 2500 });
   const projectId = queryProject || job.data?.projectId || "";
+  const project = trpc.projects.get.useQuery({ id: projectId }, { enabled: Boolean(projectId) });
   const initial = trpc.jobs.session.useQuery({ id }, { refetchInterval: 500 });
   const catalog = trpc.agent.models.useQuery();
   const setModel = trpc.jobs.setModel.useMutation();
@@ -350,6 +351,7 @@ function SessionInner() {
                     ? "tech_spec"
                     : job.data?.column ?? "triage"
               }
+              steps={project.data?.pipeline?.restartSteps}
             />
           </div>
         </Card>

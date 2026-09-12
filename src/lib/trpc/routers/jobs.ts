@@ -13,6 +13,7 @@ import { loadLatestArtifact, writeArtifact } from "../../artifacts/store";
 import { nowIso } from "../../paths";
 import { gcWorktree, getRuntime, retryImplementation } from "../../runtime";
 import { badgeFor, columnForState, gateForState, nextStateForApprove } from "../../runtime/types";
+import { loadPipelineForProject } from "../../runtime/pipeline";
 import { TriageReportSchema } from "../../artifacts/schemas";
 import { addJobWorktree, branchName } from "../../git/worktree";
 import { projects } from "../../db/schema";
@@ -27,6 +28,7 @@ function cardOf(
   j: typeof jobs.$inferSelect,
   queued = false,
   triage?: { classification: string; risk: string; fastTrack: boolean },
+  pipeline?: Parameters<typeof columnForState>[3],
 ) {
   return {
     id: j.id,
@@ -34,7 +36,7 @@ function cardOf(
     issueNumber: j.issueNumber,
     title: j.issueTitle,
     state: j.state,
-    column: columnForState(j.state, j.lastActiveState, j.boardColumn),
+    column: columnForState(j.state, j.lastActiveState, j.boardColumn, pipeline),
     model: j.model ?? getJobModel(j.id),
     badge: badgeFor(j.state, queued),
     local: j.issueNumber < 0,
@@ -79,6 +81,7 @@ export const jobsRouter = router({
         .select()
         .from(jobs)
         .where(and(eq(jobs.projectId, input.projectId), isNull(jobs.archivedAt)));
+      const pipeline = await loadPipelineForProject(input.projectId);
       const queued = getRuntime().queue.queued > 0;
       const triageByJob = new Map<string, { classification: string; risk: string; fastTrack: boolean }>();
       if (rows.length) {
@@ -97,10 +100,15 @@ export const jobsRouter = router({
       return rows
         .filter((j) => !input.states || input.states.includes(j.state))
         .map((j) => {
-          const card = cardOf(j, queued && (j.state === "inbox" || j.state === "triage"), triageByJob.get(j.id));
+          const card = cardOf(
+            j,
+            queued && (j.state === "inbox" || j.state === "triage"),
+            triageByJob.get(j.id),
+            pipeline,
+          );
           const live = getSessionBundle(j.id, { refresh: true }).current;
-          const currentLane = laneForJobState(j.state)?.key ?? j.state;
-          const liveMatchesColumn = Boolean(live?.lane && laneForJobState(live.lane)?.column === card.column);
+          const currentLane = laneForJobState(j.state, pipeline)?.key ?? j.state;
+          const liveMatchesColumn = Boolean(live?.lane && laneForJobState(live.lane, pipeline)?.column === card.column);
           const awaiting = j.state.startsWith("awaiting_");
           const finished = j.state === "done" || card.column === "done";
           const running =
@@ -122,7 +130,7 @@ export const jobsRouter = router({
           return {
             ...card,
             agent,
-            agentLane: displayLaneName(currentLane),
+            agentLane: displayLaneName(currentLane, pipeline),
           };
         });
     }),
@@ -149,7 +157,7 @@ export const jobsRouter = router({
     return {
       jobId: input.id,
       projectId: job.projectId,
-      lane: displayLaneName(job.state),
+      lane: displayLaneName(job.state, await loadPipelineForProject(job.projectId)),
       sessionLane: live?.lane ?? job.state,
       status,
       thinking: live?.thinking ?? "",
@@ -198,7 +206,7 @@ export const jobsRouter = router({
     .input(
       z.object({
         id: z.string(),
-        step: z.enum(["intake", "triage", "planning", "tech_spec", "tasks", "implementation", "review"]),
+        step: z.string().min(1),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -234,8 +242,9 @@ export const jobsRouter = router({
         .limit(1)
     )[0];
     const triageParsed = triageRow ? TriageReportSchema.safeParse(JSON.parse(triageRow.body)) : null;
+    const pipeline = await loadPipelineForProject(j.projectId);
     return {
-      ...cardOf(j, false, triageParsed?.success ? triageParsed.data : undefined),
+      ...cardOf(j, false, triageParsed?.success ? triageParsed.data : undefined, pipeline),
       issueBody: j.issueBody,
       pendingArtifact: j.pendingArtifact,
       worktreePath: j.worktreePath,
@@ -275,17 +284,21 @@ export const jobsRouter = router({
       const runtime = getRuntime();
       const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
       if (!job) throw new TRPCError({ code: "NOT_FOUND" });
-      const gate = gateForState(job.state);
+      const pipeline = await loadPipelineForProject(job.projectId);
+      const gate = gateForState(job.state, pipeline);
       if (!gate) {
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "job is not awaiting approval" });
       }
-      if (input.action === "send_back" && gate !== "review") {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "send_back only at review gate" });
+      const gateAction = pipeline.lanes
+        .flatMap((l) => l.actions)
+        .find((a) => a.type === "human_approval" && a.gate === gate);
+      if (input.action === "send_back" && !gateAction?.allowSendBack) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "send_back is not enabled at this gate" });
       }
       if ((input.action === "reject" || input.action === "send_back") && !input.note) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "note required" });
       }
-      const nextState = nextStateForApprove(job.state, input.action);
+      const nextState = nextStateForApprove(job.state, input.action, pipeline);
       await runtime.withJobMutex(job.id, async () => {
         const cas = await ctx.db
           .update(jobs)

@@ -11,6 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PipelineEditor } from "@/components/PipelineEditor";
+import { IntakeSettings } from "@/components/IntakeSettings";
+import { DEFAULT_PIPELINE } from "@/lib/runtime/pipeline/default";
 
 function SettingsInner() {
   const params = useSearchParams();
@@ -19,6 +22,9 @@ function SettingsInner() {
   const project = trpc.projects.get.useQuery({ id }, { enabled: Boolean(id) });
   const update = trpc.projects.update.useMutation();
   const rotate = trpc.projects.rotatePat.useMutation();
+  const updatePipeline = trpc.projects.updatePipeline.useMutation({
+    onSuccess: () => project.refetch(),
+  });
   const [pat, setPat] = useState("");
   if (!project.data) {
     return (
@@ -40,7 +46,7 @@ function SettingsInner() {
         }
       />
       <AgentGate>
-      <main className="mx-auto max-w-xl px-4 py-10">
+      <main className="mx-auto max-w-3xl px-4 py-10">
         <p className="mb-2 text-[11px] font-medium tracking-[0.16em] text-muted-foreground uppercase">
           02 · Project
         </p>
@@ -93,6 +99,23 @@ function SettingsInner() {
             </p>
           </CardContent>
         </Card>
+        <IntakeSettings
+          origin={p.origin}
+          value={p.intake}
+          onChange={(intake) => update.mutate({ id, intake })}
+        />
+        <div className="mt-6">
+          <PipelineEditor
+            key={p.pipelineCustom ? "custom" : "default"}
+            value={p.pipeline ?? DEFAULT_PIPELINE}
+            defaultPipeline={DEFAULT_PIPELINE}
+            custom={Boolean(p.pipelineCustom)}
+            saving={updatePipeline.isPending}
+            error={updatePipeline.error?.message}
+            onSave={(pipeline) => updatePipeline.mutate({ id, pipeline })}
+            onReset={() => updatePipeline.mutate({ id, pipeline: null })}
+          />
+        </div>
       </main>
       </AgentGate>
     </div>

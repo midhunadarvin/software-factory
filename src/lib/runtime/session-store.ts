@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { sessionFilePath } from "../paths";
 import { stepIndex, type RestartStepId } from "./lanes";
+import type { ResolvedPipeline } from "./pipeline";
 
 export type StreamKind = "thinking" | "text" | "tool";
 
@@ -161,11 +162,11 @@ export function stopSession(jobId: string, reason?: string) {
 }
 
 /** Keep sessions from steps before `step`; drop current/history from that step onward. */
-export function trimSessionsFromStep(jobId: string, step: RestartStepId) {
+export function trimSessionsFromStep(jobId: string, step: RestartStepId, pipeline?: ResolvedPipeline) {
   const bundle = getSessionBundle(jobId, { refresh: true });
-  const cut = stepIndex(step);
+  const cut = stepIndex(step, pipeline);
   const keep = (s: AgentSession) => {
-    const idx = stepIndex(s.lane);
+    const idx = stepIndex(s.lane, pipeline);
     return idx >= 0 && idx < cut;
   };
   bundle.history = bundle.history.filter(keep);

@@ -1,13 +1,16 @@
-export type LaneId =
+export type BuiltInLaneId =
   | "triage"
   | "requirements"
   | "tech_spec"
   | "tasks"
   | "implementation"
   | "review"
-  | "pull_request";
+  | "pull_request"
+  | "fix";
 
-const SKILLS: Record<LaneId, string> = {
+export type LaneId = string;
+
+const SKILLS: Record<BuiltInLaneId, string> = {
   triage: `You triage this ticket.
 
 Use listDir, grep, and readFile to inspect the repo, then:
@@ -69,6 +72,14 @@ The factory then runs the next task or moves the ticket to review. Do not keep e
    Empty findings is fine when approving.
 3. That tool saves the review. Then stop. Do not retry. Do not call finishLane.`,
 
+  fix: `You apply review findings in the job worktree. Be brief.
+
+1. Read the files named in the findings.
+2. writeFile or replaceInFile to fix blocker, major, and minor issues — only product files.
+3. gitCommit with a short message. That ends this step.
+If the review approved the change and there is nothing to fix, say so and stop without writing.
+Never write factory notes under .factory/.`,
+
   pull_request: `You write the pull request a human will review. Be brief.
 
 1. gitStatus once. Confirm you are on a feature branch (factory/…, feat/…, fix/…). Do not commit from main/master.
@@ -82,6 +93,7 @@ The GitHub pull request must contain only the required product files. Never add,
 Do not force-push. Do not keep exploring. Do not call finishLane.`,
 };
 
-export function skillFor(lane: LaneId): string {
-  return SKILLS[lane];
+export function skillFor(lane: LaneId, override?: string): string {
+  if (override?.trim()) return override.trim();
+  return SKILLS[lane as BuiltInLaneId] ?? SKILLS.implementation;
 }

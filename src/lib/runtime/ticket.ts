@@ -7,6 +7,7 @@ import { nowIso } from "../paths";
 import type { BoardColumn } from "./types";
 import { getSession, patchSession, stopSession } from "./session-store";
 import { LANES, laneForJobState, nextLane } from "./lanes";
+import { laneForJobState as laneFromPipeline } from "./pipeline";
 
 export {
   LANES,
@@ -116,42 +117,47 @@ export async function advanceTicket(jobId: string) {
 export async function finishLaneAndStop(jobId: string) {
   const session = getSession(jobId);
   const lane = session?.lane;
-  if (lane && ["requirements", "tech_spec", "tasks"].includes(lane) && session.artifact == null) {
+  const { loadPipelineForJob } = await import("./pipeline");
+  const pipeline = await loadPipelineForJob(jobId);
+  const laneCfg = lane ? (pipeline.laneById.get(lane) ?? laneFromPipeline(pipeline, lane)) : undefined;
+  const needsArtifact = laneCfg?.actions.some((a) => a.type === "produce" && (a.artifact === "fr" || a.artifact === "tech_spec" || a.artifact === "task_graph"));
+  if (lane && needsArtifact && session.artifact == null) {
     return {
       ok: false as const,
       error: "Submit the lane artifact with submitArtifact first, then call finishLane.",
     };
   }
-  if (lane === "review") {
+  if (laneCfg?.actions.some((a) => a.type === "implement") || lane === "implementation") {
     stopSession(jobId);
     return {
       ok: true as const,
-      from: "review",
-      to: "review",
-      column: "pull_request" as const,
-      nextAgent: null,
-      session: "stopped" as const,
-    };
-  }
-  if (lane === "implementation") {
-    stopSession(jobId);
-    return {
-      ok: true as const,
-      from: "implementation",
-      to: "implementation",
-      column: "implementation" as const,
+      from: lane ?? "implementation",
+      to: lane ?? "implementation",
+      column: laneCfg?.column ?? "implementation",
       nextAgent: null,
       session: "stopped" as const,
       taskComplete: true,
     };
   }
-  if (lane === "tasks") {
+  if (lane === "review" || laneCfg?.actions.some((a) => a.artifact === "review")) {
+    stopSession(jobId);
+    return {
+      ok: true as const,
+      from: lane ?? "review",
+      to: lane ?? "review",
+      column: laneCfg?.column ?? "pull_request",
+      nextAgent: null,
+      session: "stopped" as const,
+    };
+  }
+  if (lane === "tasks" || laneCfg?.actions.some((a) => a.artifact === "task_graph")) {
     const job = await loadTicket(jobId);
-    if (job && (job.state === "implementation" || job.boardColumn === "implementation")) {
+    const impl = pipeline.lanes.find((l) => l.actions.some((a) => a.type === "implement"));
+    if (job && (job.state === impl?.state || job.boardColumn === impl?.column)) {
       stopSession(jobId);
       return {
         ok: true as const,
-        from: "tasks",
+        from: lane ?? "tasks",
         to: job.state,
         column: job.boardColumn,
         nextAgent: null,
@@ -159,17 +165,14 @@ export async function finishLaneAndStop(jobId: string) {
       };
     }
   }
-  if (lane === "requirements" || lane === "tech_spec") {
-    const parked =
-      lane === "requirements"
-        ? { state: "awaiting_requirements_approval" as const, column: "planning" as const }
-        : { state: "awaiting_tech_spec_approval" as const, column: "tech_spec" as const };
+  const approval = laneCfg?.actions.find((a) => a.type === "human_approval");
+  if (approval) {
     await getDb()
       .update(jobs)
       .set({
-        state: parked.state,
-        boardColumn: parked.column,
-        lastActiveState: lane,
+        state: approval.awaitingState ?? `awaiting_${laneCfg!.id}_approval`,
+        boardColumn: laneCfg!.column,
+        lastActiveState: laneCfg!.id,
         error: null,
         updatedAt: nowIso(),
       })
@@ -177,9 +180,9 @@ export async function finishLaneAndStop(jobId: string) {
     stopSession(jobId);
     return {
       ok: true as const,
-      from: lane,
-      to: parked.state,
-      column: parked.column,
+      from: laneCfg!.id,
+      to: approval.awaitingState ?? laneCfg!.id,
+      column: laneCfg!.column,
       nextAgent: null,
       session: "stopped" as const,
       waitingForHuman: true,
@@ -214,7 +217,7 @@ export function ticketTools(jobId: string) {
     moveTicket: tool({
       description: "Move the ticket to a board column (triage, planning, tech_spec, tasks, implementation, pull_request, done)",
       inputSchema: z.object({
-        column: z.enum(["triage", "planning", "tech_spec", "tasks", "implementation", "pull_request", "done"]),
+        column: z.string().min(1),
       }),
       execute: async ({ column }) => moveTicketColumn(jobId, column),
     }),

@@ -46,6 +46,16 @@ import {
   writeLaneContext,
 } from "./context";
 import type { HitlResume } from "./types";
+import { DEFAULT_PIPELINE } from "./pipeline/default";
+import {
+  firstActionOf,
+  nextAction,
+  nextLane,
+  resolvePipeline,
+  type ResolvedAction,
+  type ResolvedPipeline,
+} from "./pipeline";
+import type { PipelineConfig } from "./pipeline/schema";
 
 export const FactoryState = Annotation.Root({
   jobId: Annotation<string>(),
@@ -127,7 +137,88 @@ async function loadFastTrack(jobId: string, fallback?: boolean): Promise<boolean
   return parsed.success ? parsed.data.fastTrack : false;
 }
 
-async function triageDraft(state: FactoryStateType) {
+async function shouldSkipAction(
+  action: ResolvedAction,
+  state: FactoryStateType,
+): Promise<boolean> {
+  if (action.skipIf === "fast_track") return loadFastTrack(state.jobId, state.fastTrack);
+  if (action.skipIf === "review_approved") return state.review?.verdict === "approve";
+  return false;
+}
+
+function failedGateNode(action: ResolvedAction): string {
+  return action.graphNode === "implementation" ? "implementation_failed_gate" : `${action.graphNode}_failed_gate`;
+}
+
+async function advanceFrom(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node: string,
+  patch: Partial<FactoryStateType>,
+  pending?: unknown,
+): Promise<Partial<FactoryStateType>> {
+  const action = resolved.actionByNode.get(node);
+  const lane = action ? resolved.laneById.get(action.laneId) : undefined;
+  const next = nextAction(resolved, node);
+
+  if (action?.handoff) {
+    const nxtLane = lane ? nextLane(resolved, lane.id) : undefined;
+    await persistJob(state.jobId, {
+      state: nxtLane?.state ?? "done",
+      lastActiveState: lane?.id ?? state.stage,
+      boardColumn: nxtLane?.column ?? "done",
+      pendingArtifact: pending != null ? JSON.stringify(pending) : undefined,
+      ...(nxtLane?.queue === "impl" || nxtLane?.id === "implementation" ? { implStartedAt: nowIso() } : {}),
+    });
+    return { ...patch, stage: "handoff" };
+  }
+
+  if (next && next.type === "human_approval" && (await shouldSkipAction(next, { ...state, ...patch }))) {
+    return advanceFrom(state, resolved, next.graphNode, patch, pending);
+  }
+
+  if (next?.type === "human_approval") {
+    const nextLaneDef = resolved.laneById.get(next.laneId);
+    await persistJob(state.jobId, {
+      state: next.awaitingState ?? `awaiting_${next.laneId}_approval`,
+      lastActiveState: next.laneId,
+      boardColumn: nextLaneDef?.column ?? lane?.column,
+      pendingArtifact: pending != null ? JSON.stringify(pending) : undefined,
+    });
+    await logEvent({
+      projectId: state.projectId,
+      jobId: state.jobId,
+      event: "job.approval_needed",
+      payload: { gate: next.gate ?? next.laneId },
+    });
+    return { ...patch, stage: next.graphNode };
+  }
+
+  if (next) {
+    const nextLaneDef = resolved.laneById.get(next.laneId);
+    await persistJob(state.jobId, {
+      state: nextLaneDef?.state ?? next.laneId,
+      lastActiveState: lane?.id ?? next.laneId,
+      boardColumn: nextLaneDef?.column,
+      pendingArtifact: pending != null ? JSON.stringify(pending) : undefined,
+      ...(next.type === "implement" ? { implStartedAt: nowIso() } : {}),
+    });
+    return { ...patch, stage: next.graphNode };
+  }
+
+  await persistJob(state.jobId, {
+    state: "done",
+    lastActiveState: lane?.id ?? "done",
+    boardColumn: resolved.lanes.find((l) => l.kind === "terminal")?.column ?? "done",
+  });
+  return { ...patch, stage: "done" };
+}
+
+async function triageDraft(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "triage_draft",
+) {
   const existing = await loadLatestArtifact(state.jobId, "triage");
   const job = await loadJob(state.jobId);
   if (!job) throw new Error("job missing");
@@ -153,12 +244,6 @@ async function triageDraft(state: FactoryStateType) {
     await writeArtifact({ jobId: state.jobId, kind: "triage", source: "agent", body: drafted });
     await writeLaneContext(state.jobId, contextFromTriage(drafted));
   }
-  await persistJob(state.jobId, {
-    state: "requirements",
-    lastActiveState: "triage",
-    boardColumn: "planning",
-    pendingArtifact: JSON.stringify(drafted),
-  });
   await logEvent({
     projectId: state.projectId,
     jobId: state.jobId,
@@ -170,10 +255,20 @@ async function triageDraft(state: FactoryStateType) {
       fastTrack: drafted.fastTrack,
     },
   });
-  return { stage: "handoff", triage: drafted, fastTrack: drafted.fastTrack };
+  return advanceFrom(
+    state,
+    resolved,
+    node,
+    { triage: drafted, fastTrack: drafted.fastTrack },
+    drafted,
+  );
 }
 
-async function requirementsDraft(state: FactoryStateType) {
+async function requirementsDraft(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "requirements_draft",
+) {
   const existing = await loadLatestArtifact(state.jobId, "fr");
   const job = await loadJob(state.jobId);
   if (!job) throw new Error("job missing");
@@ -195,26 +290,28 @@ async function requirementsDraft(state: FactoryStateType) {
   }
   writeFactoryDoc(job, "requirements.mdx", frMdx(drafted));
   writeFactoryDoc(job, "requirements.md", frMarkdown(drafted));
-  await persistJob(state.jobId, {
-    state: "awaiting_requirements_approval",
-    lastActiveState: "requirements",
-    boardColumn: "planning",
-    pendingArtifact: JSON.stringify(drafted),
-  });
-  return { stage: "requirements_gate", fr: drafted };
+  return advanceFrom(state, resolved, node, { fr: drafted }, drafted);
 }
 
-async function requirementsGate(state: FactoryStateType) {
+async function requirementsGate(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "requirements_gate",
+) {
   const decision = interrupt({ gate: "requirements", artifact: state.fr }) as HitlResume;
   if (decision.action === "reject") return { stage: "rejected", fr: state.fr };
   const artifact = FunctionalRequirementsSchema.parse(
     "artifact" in decision ? decision.artifact : state.fr,
   );
   await writeLaneContext(state.jobId, contextFromFr(artifact));
-  return { stage: "tech_spec_draft", fr: artifact };
+  return advanceFrom(state, resolved, node, { fr: artifact }, artifact);
 }
 
-async function techSpecDraft(state: FactoryStateType) {
+async function techSpecDraft(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "tech_spec_draft",
+) {
   const existing = await loadLatestArtifact(state.jobId, "tech_spec");
   const job = await loadJob(state.jobId);
   if (!job) throw new Error("job missing");
@@ -241,26 +338,28 @@ async function techSpecDraft(state: FactoryStateType) {
   }
   writeFactoryDoc(job, "tech-spec.mdx", specMdx(drafted));
   writeFactoryDoc(job, "tech-spec.md", specMarkdown(drafted));
-  await persistJob(state.jobId, {
-    state: "awaiting_tech_spec_approval",
-    lastActiveState: "tech_spec",
-    boardColumn: "tech_spec",
-    pendingArtifact: JSON.stringify(drafted),
-  });
-  return { stage: "tech_spec_gate", spec: drafted };
+  return advanceFrom(state, resolved, node, { spec: drafted }, drafted);
 }
 
-async function techSpecGate(state: FactoryStateType) {
+async function techSpecGate(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "tech_spec_gate",
+) {
   const decision = interrupt({ gate: "tech_spec", artifact: state.spec }) as HitlResume;
   if (decision.action === "reject") return { stage: "rejected", spec: state.spec };
   const artifact = TechnicalSpecSchema.parse(
     "artifact" in decision ? decision.artifact : state.spec,
   );
   await writeLaneContext(state.jobId, contextFromSpec(artifact));
-  return { stage: "tasks_draft", spec: artifact };
+  return advanceFrom(state, resolved, node, { spec: artifact }, artifact);
 }
 
-async function tasksDraft(state: FactoryStateType) {
+async function tasksDraft(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "tasks_draft",
+) {
   const existing = await loadLatestArtifact(state.jobId, "task_graph");
   const job = await loadJob(state.jobId);
   if (!job) throw new Error("job missing");
@@ -284,22 +383,19 @@ async function tasksDraft(state: FactoryStateType) {
     });
     await writeLaneContext(state.jobId, contextFromTasks(drafted));
   }
-  await persistJob(state.jobId, {
-    state: "implementation",
-    lastActiveState: "tasks",
-    boardColumn: "implementation",
-    pendingArtifact: JSON.stringify(drafted),
-    implStartedAt: nowIso(),
-  });
-  return { stage: "handoff", tasks: drafted };
+  return advanceFrom(state, resolved, node, { tasks: drafted }, drafted);
 }
 
-async function tasksGate(state: FactoryStateType) {
-  if (await loadFastTrack(state.jobId, state.fastTrack)) {
+async function tasksGate(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "tasks_gate",
+) {
+  const action = resolved.actionByNode.get(node);
+  if (action && (await shouldSkipAction(action, state))) {
     const artifact = TaskGraphSchema.parse(state.tasks);
     await writeLaneContext(state.jobId, contextFromTasks(artifact));
-    await persistJob(state.jobId, { implStartedAt: nowIso() });
-    return { stage: "implementation", tasks: artifact };
+    return advanceFrom(state, resolved, node, { tasks: artifact }, artifact);
   }
   const decision = interrupt({ gate: "tasks", artifact: state.tasks }) as HitlResume;
   if (decision.action === "reject") return { stage: "rejected", tasks: state.tasks };
@@ -307,8 +403,7 @@ async function tasksGate(state: FactoryStateType) {
     "artifact" in decision ? decision.artifact : state.tasks,
   );
   await writeLaneContext(state.jobId, contextFromTasks(artifact));
-  await persistJob(state.jobId, { implStartedAt: nowIso() });
-  return { stage: "implementation", tasks: artifact };
+  return advanceFrom(state, resolved, node, { tasks: artifact }, artifact);
 }
 
 async function runOneTask(
@@ -405,15 +500,21 @@ async function filesAlreadyOnBranch(worktree: string, files: string[]): Promise<
   return false;
 }
 
-async function implementationNode(state: FactoryStateType) {
+async function implementationNode(state: FactoryStateType, resolved: ResolvedPipeline) {
+  const implAction = resolved.lanes.flatMap((l) => l.actions).find((a) => a.type === "implement");
+  const implLane = implAction ? resolved.laneById.get(implAction.laneId) : resolved.laneById.get("implementation");
+  const afterImpl = implAction
+    ? nextAction(resolved, implAction.graphNode)
+    : firstActionOf(resolved, "review");
+  const afterStage = afterImpl?.graphNode ?? "review_draft";
   const tasks = state.tasks;
-  if (!tasks) return { stage: "review_draft" };
+  if (!tasks) return { stage: afterStage };
   const task = nextPending(tasks);
-  if (!task) return { stage: "review_draft" };
+  if (!task) return { stage: afterStage };
   await persistJob(state.jobId, {
-    state: "implementation",
-    lastActiveState: "implementation",
-    boardColumn: "implementation",
+    state: implLane?.state ?? "implementation",
+    lastActiveState: implLane?.id ?? "implementation",
+    boardColumn: implLane?.column ?? "implementation",
   });
   let result = await runOneTask(state, task);
   if (result.status === "failed" && result.error !== "no worktree" && result.error !== "Agent model is not configured") {
@@ -432,40 +533,53 @@ async function implementationNode(state: FactoryStateType) {
       boardColumn: "implementation",
       error: result.error ?? "task failed",
     });
-    return { stage: "implementation_failed_gate", tasks: result.tasks, failedTaskId: task.id };
+    return {
+      stage: implAction ? failedGateNode(implAction) : "implementation_failed_gate",
+      tasks: result.tasks,
+      failedTaskId: task.id,
+    };
   }
   const next = nextStageAfterTask(result.tasks);
   if (next === "implementation") {
     await persistJob(state.jobId, {
-      state: "implementation",
-      lastActiveState: "implementation",
-      boardColumn: "implementation",
+      state: implLane?.state ?? "implementation",
+      lastActiveState: implLane?.id ?? "implementation",
+      boardColumn: implLane?.column ?? "implementation",
     });
-    return { stage: "implementation", tasks: result.tasks };
+    return { stage: implAction?.graphNode ?? "implementation", tasks: result.tasks };
   }
   await writeLaneContext(state.jobId, contextFromTasks(result.tasks));
+  if (implAction) {
+    return advanceFrom(state, resolved, implAction.graphNode, { tasks: result.tasks }, result.tasks);
+  }
   await persistJob(state.jobId, {
     state: "review",
     lastActiveState: "implementation",
     boardColumn: "pull_request",
   });
-  return { stage: "review_draft", tasks: result.tasks };
+  return { stage: afterStage, tasks: result.tasks };
 }
 
-async function implementationFailedGate(state: FactoryStateType) {
+async function implementationFailedGate(state: FactoryStateType, resolved: ResolvedPipeline) {
   interrupt({ gate: "implementation_failed", taskId: state.failedTaskId });
   const latest = await loadLatestArtifact(state.jobId, "task_graph");
   const tasks = latest ? TaskGraphSchema.parse(latest.parsed) : state.tasks;
+  const impl = resolved.lanes.flatMap((l) => l.actions).find((a) => a.type === "implement");
+  const implLane = impl ? resolved.laneById.get(impl.laneId) : undefined;
   await persistJob(state.jobId, {
-    state: "implementation",
-    lastActiveState: "implementation",
-    boardColumn: "implementation",
+    state: implLane?.state ?? "implementation",
+    lastActiveState: implLane?.id ?? "implementation",
+    boardColumn: implLane?.column ?? "implementation",
     implStartedAt: nowIso(),
   });
-  return { stage: "implementation", tasks };
+  return { stage: impl?.graphNode ?? "implementation", tasks };
 }
 
-async function reviewDraft(state: FactoryStateType) {
+async function reviewDraft(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "review_draft",
+) {
   const existing = await loadLatestArtifact(state.jobId, "review");
   const job = await loadJob(state.jobId);
   if (!job) throw new Error("job missing");
@@ -489,37 +603,21 @@ async function reviewDraft(state: FactoryStateType) {
     await writeArtifact({ jobId: state.jobId, kind: "review", source: "agent", body: drafted });
     await writeLaneContext(state.jobId, contextFromReview(drafted));
   }
-  if (await loadFastTrack(state.jobId, state.fastTrack)) {
-    await persistJob(state.jobId, {
-      state: "pull_request",
-      lastActiveState: "review",
-      boardColumn: "pull_request",
-      pendingArtifact: JSON.stringify(drafted),
-    });
-    return { stage: "pull_request", review: drafted };
-  }
-  await persistJob(state.jobId, {
-    state: "awaiting_review_approval",
-    lastActiveState: "review",
-    boardColumn: "pull_request",
-    pendingArtifact: JSON.stringify(drafted),
-  });
-  await logEvent({
-    projectId: state.projectId,
-    jobId: state.jobId,
-    event: "job.approval_needed",
-    payload: { gate: "review" },
-  });
-  return { stage: "review_gate", review: drafted };
+  return advanceFrom(state, resolved, node, { review: drafted }, drafted);
 }
 
-async function reviewGate(state: FactoryStateType) {
-  const decision = interrupt({ gate: "review", artifact: state.review }) as HitlResume;
+async function reviewGate(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "review_gate",
+) {
+  const action = resolved.actionByNode.get(node);
+  const decision = interrupt({ gate: action?.gate ?? "review", artifact: state.review }) as HitlResume;
   if (decision.action === "reject") return { stage: "rejected" };
   if (decision.action === "send_back") {
     const reset = resetFlaggedTasks(state.tasks!, state.review!);
     const allDone = reset.tasks.every((t) => t.status === "done");
-    const next = allDone
+    const nextTasks = allDone
       ? {
           ...reset,
           tasks: reset.tasks.map((t, i, a) =>
@@ -531,20 +629,27 @@ async function reviewGate(state: FactoryStateType) {
       jobId: state.jobId,
       kind: "task_graph",
       source: "human",
-      body: next,
+      body: nextTasks,
     });
+    const destId = action?.sendBackTo ?? "implementation";
+    const dest = firstActionOf(resolved, destId);
+    const destLane = resolved.laneById.get(destId);
     await persistJob(state.jobId, {
-      state: "implementation",
-      lastActiveState: "implementation",
-      boardColumn: "implementation",
+      state: destLane?.state ?? destId,
+      lastActiveState: destLane?.id ?? destId,
+      boardColumn: destLane?.column ?? "implementation",
       implStartedAt: nowIso(),
     });
-    return { stage: "implementation", tasks: next };
+    return { stage: dest?.graphNode ?? destId, tasks: nextTasks };
   }
-  return { stage: "pull_request", review: state.review };
+  return advanceFrom(state, resolved, node, { review: state.review }, state.review);
 }
 
-async function pullRequestNode(state: FactoryStateType) {
+async function pullRequestNode(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node = "pull_request",
+) {
   const job = await loadJob(state.jobId);
   if (!job) throw new Error("job missing");
   const { projects } = await import("../db/schema");
@@ -641,32 +746,13 @@ Diff:\n${wrapUntrusted("diff", diff.slice(0, 40_000))}`,
     fs.writeFileSync(path.join(dir, "pull-request.md"), prMarkdown(draft.title, draft.body));
     await commitPrPrep(job.worktreePath, job.issueNumber);
 
-    await persistJob(state.jobId, {
-      state: "awaiting_pr_approval",
-      lastActiveState: "pull_request",
-      boardColumn: "pull_request",
-      pendingArtifact: JSON.stringify(draft),
-      error: null,
-    });
-    await logEvent({
-      projectId: state.projectId,
-      jobId: state.jobId,
-      event: "job.approval_needed",
-      payload: { gate: "pr", document: "pull-request.md" },
-    });
-    return { stage: "pr_gate" };
+    return advanceFrom(state, resolved, node, {}, draft);
   }
 
-  await persistJob(state.jobId, {
-    state: "awaiting_pr_approval",
-    lastActiveState: "pull_request",
-    boardColumn: "pull_request",
-    prUrl: null,
-  });
-  return { stage: "pr_gate" };
+  return advanceFrom(state, resolved, node, { prUrl: null });
 }
 
-async function pullRequestGate(state: FactoryStateType) {
+async function pullRequestGate(state: FactoryStateType, resolved: ResolvedPipeline) {
   const latest = await loadLatestArtifact(state.jobId, "pr");
   const stored = latest ? PullRequestDraftSchema.safeParse(latest.parsed) : null;
   const decision = interrupt({
@@ -741,6 +827,75 @@ async function pullRequestGate(state: FactoryStateType) {
   return { stage: publishError ? "rejected" : "done", prUrl: published.url, error: publishError };
 }
 
+async function fixNode(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node: string,
+): Promise<Partial<FactoryStateType>> {
+  const action = resolved.actionByNode.get(node);
+  const lane = action ? resolved.laneById.get(action.laneId) : undefined;
+  if (action && (await shouldSkipAction(action, state))) {
+    return advanceFrom(state, resolved, node, {});
+  }
+  const job = await loadJob(state.jobId);
+  if (!job) throw new Error("job missing");
+  await persistJob(state.jobId, {
+    state: lane?.state ?? action?.laneId ?? "review",
+    lastActiveState: lane?.id ?? "review",
+    boardColumn: lane?.column ?? "pull_request",
+  });
+
+  const review = state.review;
+  const findings = review?.findings ?? [];
+  if (!review || (review.verdict === "approve" && findings.length === 0)) {
+    return advanceFrom(state, resolved, node, {});
+  }
+
+  if (job.worktreePath) {
+    const worktree = job.worktreePath;
+    startSession(state.jobId, state.projectId, "fix", getJobModel(state.jobId));
+    try {
+      await completeText({
+        jobId: state.jobId,
+        maxSteps: 20,
+        system: `${skillFor("fix", action?.skill)}\n\nApply the review findings, gitCommit, then stop. Do not add .factory/ notes.`,
+        prompt: `${formatContextBlock(await loadLaneContext(state.jobId))}\nReview:\n${JSON.stringify({
+          verdict: review.verdict,
+          summary: review.summary,
+          findings,
+        })}\nSpec: ${JSON.stringify(state.spec?.summary)}`,
+        tools: {
+          ...ticketTools(state.jobId),
+          ...repoTools(worktree, {
+            write: true,
+            exec: true,
+            onCommit: () => stopSession(state.jobId),
+          }),
+        },
+        onPart: (part) => {
+          pushStream({
+            jobId: state.jobId,
+            projectId: state.projectId,
+            lane: "fix",
+            kind: part.type === "tool" ? "tool" : part.type === "thinking" ? "thinking" : "text",
+            delta: part.delta,
+            tool: part.tool,
+          });
+        },
+      });
+      finishSession(state.jobId, "done");
+    } catch (err) {
+      finishSession(state.jobId, "error", formatLlmError(err));
+      throw err;
+    }
+    const dirty = await productStatus(worktree);
+    if (dirty.trim()) {
+      await commitProductChanges(worktree, `factory: apply review findings`.slice(0, 72)).catch(() => false);
+    }
+  }
+  return advanceFrom(state, resolved, node, {});
+}
+
 async function reviewDiff(worktree: string): Promise<string> {
   const tries = [
     ["diff", "HEAD~1", "--"],
@@ -755,120 +910,135 @@ async function reviewDiff(worktree: string): Promise<string> {
   return "(no diff — inspect files with gitDiff/readFile)";
 }
 
-function routeAfterGate(s: FactoryStateType) {
-  return s.stage === "rejected" ? END : s.stage;
+function routeAfterNode(s: FactoryStateType): string {
+  if (s.stage === "rejected" || s.stage === "handoff" || s.stage === "done") return END;
+  return s.stage;
 }
-
-const GRAPH_NODES = [
-  "triage_draft",
-  "requirements_draft",
-  "requirements_gate",
-  "tech_spec_draft",
-  "tech_spec_gate",
-  "tasks_draft",
-  "tasks_gate",
-  "implementation",
-  "implementation_failed_gate",
-  "review_draft",
-  "review_gate",
-  "pull_request",
-  "pr_gate",
-] as const;
 
 /** START must not always launch triage — Command({ goto }) re-enters START in the same step. */
-export function routeFromStart(s: Pick<FactoryStateType, "stage">): string {
+export function routeFromStart(
+  s: Pick<FactoryStateType, "stage">,
+  resolved: ResolvedPipeline = resolvePipeline(DEFAULT_PIPELINE),
+): string {
   const stage = s.stage;
-  if (!stage || stage === "triage_draft") return "triage_draft";
+  if (!stage || stage === resolved.firstAgentNode) return resolved.firstAgentNode;
   if (stage === "handoff" || stage === "done" || stage === "rejected") return END;
-  if ((GRAPH_NODES as readonly string[]).includes(stage)) return stage;
-  return "triage_draft";
+  if (resolved.graphNodes.includes(stage)) return stage;
+  return resolved.firstAgentNode;
 }
 
-const START_PATHS = {
-  triage_draft: "triage_draft",
-  requirements_draft: "requirements_draft",
-  requirements_gate: "requirements_gate",
-  tech_spec_draft: "tech_spec_draft",
-  tech_spec_gate: "tech_spec_gate",
-  tasks_draft: "tasks_draft",
-  tasks_gate: "tasks_gate",
-  implementation: "implementation",
-  implementation_failed_gate: "implementation_failed_gate",
-  review_draft: "review_draft",
-  review_gate: "review_gate",
-  pull_request: "pull_request",
-  pr_gate: "pr_gate",
-  [END]: END,
-} as const;
+function handlerForAction(resolved: ResolvedPipeline, action: ResolvedAction) {
+  const node = action.graphNode;
+  if (action.type === "produce") {
+    if (action.artifact === "triage") return (s: FactoryStateType) => triageDraft(s, resolved, node);
+    if (action.artifact === "fr") return (s: FactoryStateType) => requirementsDraft(s, resolved, node);
+    if (action.artifact === "tech_spec") return (s: FactoryStateType) => techSpecDraft(s, resolved, node);
+    if (action.artifact === "task_graph") return (s: FactoryStateType) => tasksDraft(s, resolved, node);
+    if (action.artifact === "review") return (s: FactoryStateType) => reviewDraft(s, resolved, node);
+    if (action.artifact === "pr") return (s: FactoryStateType) => pullRequestNode(s, resolved, node);
+  }
+  if (action.type === "implement") return (s: FactoryStateType) => implementationNode(s, resolved);
+  if (action.type === "fix") return (s: FactoryStateType) => fixNode(s, resolved, node);
+  if (action.type === "human_approval") {
+    if (action.gate === "requirements" || action.artifact === "fr") {
+      return (s: FactoryStateType) => requirementsGate(s, resolved, node);
+    }
+    if (action.gate === "tech_spec" || action.artifact === "tech_spec") {
+      return (s: FactoryStateType) => techSpecGate(s, resolved, node);
+    }
+    if (action.gate === "tasks" || action.artifact === "task_graph") {
+      return (s: FactoryStateType) => tasksGate(s, resolved, node);
+    }
+    if (action.gate === "review" || action.artifact === "review") {
+      return (s: FactoryStateType) => reviewGate(s, resolved, node);
+    }
+    if (action.gate === "pr" || action.artifact === "pr" || action.laneId === "pull_request") {
+      return (s: FactoryStateType) => pullRequestGate(s, resolved);
+    }
+    return (s: FactoryStateType) => reviewGate(s, resolved, node);
+  }
+  if (action.type === "publish") {
+    return (s: FactoryStateType) => pullRequestGate(s, resolved);
+  }
+  return async () => ({ stage: "handoff" });
+}
 
-export function compileFactoryGraph(checkpointer: SqliteSaver) {
-  const g = new StateGraph(FactoryState)
-    .addNode("triage_draft", triageDraft)
-    .addNode("requirements_draft", requirementsDraft)
-    .addNode("requirements_gate", requirementsGate)
-    .addNode("tech_spec_draft", techSpecDraft)
-    .addNode("tech_spec_gate", techSpecGate)
-    .addNode("tasks_draft", tasksDraft)
-    .addNode("tasks_gate", tasksGate)
-    .addNode("implementation", implementationNode)
-    .addNode("implementation_failed_gate", implementationFailedGate)
-    .addNode("review_draft", reviewDraft)
-    .addNode("review_gate", reviewGate)
-    .addNode("pull_request", pullRequestNode)
-    .addNode("pr_gate", pullRequestGate)
-    .addConditionalEdges(START, routeFromStart, START_PATHS)
-    .addConditionalEdges("triage_draft", (s) => (s.stage === "handoff" ? END : "requirements_draft"), {
-      requirements_draft: "requirements_draft",
-      [END]: END,
-    })
-    .addConditionalEdges("requirements_draft", (s) => (s.stage === "handoff" ? END : s.stage), {
-      requirements_gate: "requirements_gate",
-      [END]: END,
-    })
-    .addConditionalEdges("requirements_gate", routeAfterGate, {
-      tech_spec_draft: "tech_spec_draft",
-      [END]: END,
-    })
-    .addConditionalEdges("tech_spec_draft", (s) => (s.stage === "handoff" ? END : s.stage), {
-      tech_spec_gate: "tech_spec_gate",
-      [END]: END,
-    })
-    .addConditionalEdges("tech_spec_gate", routeAfterGate, {
-      tasks_draft: "tasks_draft",
-      [END]: END,
-    })
-    .addConditionalEdges("tasks_draft", (s) => (s.stage === "handoff" ? END : "tasks_gate"), {
-      tasks_gate: "tasks_gate",
-      [END]: END,
-    })
-    .addConditionalEdges("tasks_gate", routeAfterGate, {
-      implementation: "implementation",
-      [END]: END,
-    })
-    .addConditionalEdges("implementation", (s) => s.stage, {
-      implementation: "implementation",
-      review_draft: "review_draft",
-      implementation_failed_gate: "implementation_failed_gate",
-      handoff: END,
-    })
-    .addEdge("implementation_failed_gate", "implementation")
-    .addConditionalEdges("review_draft", (s) => (s.stage === "handoff" ? END : s.stage), {
-      review_gate: "review_gate",
-      pull_request: "pull_request",
-      [END]: END,
-    })
-    .addConditionalEdges("review_gate", (s) => s.stage, {
-      pull_request: "pull_request",
-      implementation: "implementation",
-      rejected: END,
-    })
-    .addConditionalEdges("pull_request", (s) => (s.stage === "pr_gate" ? "pr_gate" : END), {
-      pr_gate: "pr_gate",
-      [END]: END,
-    })
-    .addConditionalEdges("pr_gate", (s) => (s.stage === "done" ? END : s.stage === "rejected" ? END : END), {
-      [END]: END,
-    });
+function destMapFor(resolved: ResolvedPipeline, node: string): Record<string, string> {
+  const dests = new Set<string>([END]);
+  dests.add(node);
+  const action = resolved.actionByNode.get(node);
+  if (action) {
+    let cursor: ResolvedAction | undefined = nextAction(resolved, node);
+    while (cursor) {
+      dests.add(cursor.graphNode);
+      if (cursor.sendBackTo) {
+        const back = firstActionOf(resolved, cursor.sendBackTo);
+        if (back) dests.add(back.graphNode);
+        dests.add(cursor.sendBackTo);
+      }
+      cursor = cursor.handoff ? undefined : nextAction(resolved, cursor.graphNode);
+      if (dests.size > 24) break;
+    }
+    if (action.type === "implement") {
+      dests.add(failedGateNode(action));
+    }
+    if (action.allowSendBack && action.sendBackTo) {
+      const back = firstActionOf(resolved, action.sendBackTo);
+      if (back) dests.add(back.graphNode);
+    }
+  }
+  for (const n of resolved.graphNodes) dests.add(n);
+  const map: Record<string, string> = { [END]: END };
+  for (const d of dests) map[d] = d;
+  return map;
+}
+
+export function compileFactoryGraph(
+  checkpointer: SqliteSaver,
+  pipeline: PipelineConfig = DEFAULT_PIPELINE,
+) {
+  const resolved = resolvePipeline(pipeline);
+  // LangGraph's fluent types cannot express a dynamically built graph.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let g: any = new StateGraph(FactoryState);
+
+  const added = new Set<string>();
+  for (const action of resolved.lanes.flatMap((l) => l.actions)) {
+    if (action.type === "publish") continue;
+    if (added.has(action.graphNode)) continue;
+    g = g.addNode(action.graphNode, handlerForAction(resolved, action));
+    added.add(action.graphNode);
+    if (action.type === "implement") {
+      const failed = failedGateNode(action);
+      if (!added.has(failed)) {
+        g = g.addNode(failed, (s: FactoryStateType) => implementationFailedGate(s, resolved));
+        added.add(failed);
+      }
+    }
+  }
+
+  const startPaths: Record<string, string> = { [END]: END };
+  for (const n of resolved.graphNodes) startPaths[n] = n;
+  startPaths[resolved.firstAgentNode] = resolved.firstAgentNode;
+
+  g = g.addConditionalEdges(
+    START,
+    (s: FactoryStateType) => routeFromStart(s, resolved),
+    startPaths,
+  );
+
+  for (const node of added) {
+    const action = resolved.actionByNode.get(node);
+    if (action?.type === "implement") {
+      const failed = failedGateNode(action);
+      g = g.addConditionalEdges(node, (s: FactoryStateType) => routeAfterNode(s), destMapFor(resolved, node));
+      g = g.addEdge(failed, action.graphNode);
+      continue;
+    }
+    if (node.endsWith("_failed_gate")) continue;
+    g = g.addConditionalEdges(node, (s: FactoryStateType) => routeAfterNode(s), destMapFor(resolved, node));
+  }
+
   return g.compile({ checkpointer });
 }
 

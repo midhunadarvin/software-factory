@@ -14,6 +14,7 @@ import {
   searchFactoryIssues,
 } from "../github/client";
 import { nowIso, FACTORY_ROOT, invokePayloadPath } from "../paths";
+import { intakeFromProject } from "../intake/config";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -30,6 +31,16 @@ import {
 import { resetFlaggedTasks } from "../artifacts/reset-flagged";
 import { ingestWorkerLine, logEvent } from "./events";
 import { compileFactoryGraph, openCheckpointer, type FactoryStateType } from "./graph";
+import {
+  artifactsFromStep,
+  docsFromStep,
+  isRunnableLaneState,
+  loadPipelineForProject,
+  resolvePipeline,
+  type ResolvedPipeline,
+} from "./pipeline";
+import { DEFAULT_PIPELINE } from "./pipeline/default";
+import type { PipelineConfig } from "./pipeline/schema";
 import { acquirePidfile, isAlive, readDeadPid, releasePidfile } from "./pidfile";
 import { RunQueue } from "./queue";
 import type { HitlResume } from "./types";
@@ -42,12 +53,7 @@ import {
   contextFromTriage,
   writeLaneContext,
 } from "./context";
-import {
-  graphNodeForState,
-  isRunnableLaneState,
-  RESTART_STEPS,
-  type RestartStepId,
-} from "./ticket";
+import { graphNodeForState, RESTART_STEPS, type RestartStepId } from "./ticket";
 import { stopSession, trimSessionsFromStep } from "./session-store";
 
 type CompiledGraph = ReturnType<typeof compileFactoryGraph>;
@@ -56,6 +62,7 @@ const mutexes = new Map<string, Promise<void>>();
 
 export class FactoryRuntime {
   graph: CompiledGraph | null = null;
+  graphs = new Map<string, CompiledGraph>();
   checkpointer: ReturnType<typeof openCheckpointer> | null = null;
   queue = new RunQueue();
   started = false;
@@ -73,11 +80,28 @@ export class FactoryRuntime {
     return this.liveInvokes.has(jobId);
   }
 
+  graphFor(pipeline: PipelineConfig = DEFAULT_PIPELINE): CompiledGraph {
+    if (!this.checkpointer) this.checkpointer = openCheckpointer();
+    const key = JSON.stringify(pipeline);
+    let compiled = this.graphs.get(key);
+    if (!compiled) {
+      compiled = compileFactoryGraph(this.checkpointer, pipeline);
+      this.graphs.set(key, compiled);
+    }
+    this.graph = compiled;
+    return compiled;
+  }
+
+  async graphForJob(job: { projectId: string }): Promise<CompiledGraph> {
+    const resolved = await loadPipelineForProject(job.projectId);
+    return this.graphFor(resolved.config);
+  }
+
   async startWorker() {
     if (this.started) return;
     this.started = true;
     this.checkpointer = openCheckpointer();
-    this.graph = compileFactoryGraph(this.checkpointer);
+    this.graph = this.graphFor(DEFAULT_PIPELINE);
   }
 
   async start() {
@@ -85,7 +109,7 @@ export class FactoryRuntime {
     acquirePidfile();
     this.started = true;
     this.checkpointer = openCheckpointer();
-    this.graph = compileFactoryGraph(this.checkpointer);
+    this.graph = this.graphFor(DEFAULT_PIPELINE);
     const dead = readDeadPid();
     if (dead) {
       await getDb()
@@ -129,8 +153,10 @@ export class FactoryRuntime {
   }
 
   async getState(jobId: string) {
-    if (!this.graph) throw new Error("runtime not started");
-    return this.graph.getState({ configurable: { thread_id: jobId } });
+    const job = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0];
+    const graph = job ? await this.graphForJob(job) : this.graph;
+    if (!graph) throw new Error("runtime not started");
+    return graph.getState({ configurable: { thread_id: jobId } });
   }
 
   hasInterrupt(snap: { tasks?: Array<{ interrupts?: unknown[] }> | Record<string, { interrupts?: unknown[] }> }): boolean {
@@ -160,8 +186,12 @@ export class FactoryRuntime {
         error: null,
       })
       .where(eq(jobs.id, job.id));
+    const pipeline = await loadPipelineForProject(job.projectId);
+    const lane = pipeline.laneById.get(job.state) ?? pipeline.lanes.find((l) => l.state === job.state);
     const kindQueue =
-      job.state === "implementation" || (kind === "resume" && resume?.action === "retry")
+      lane?.queue === "impl" ||
+      job.state === "implementation" ||
+      (kind === "resume" && resume?.action === "retry")
         ? "impl"
         : "planning";
     const release = await this.queue.acquire(kindQueue);
@@ -208,14 +238,8 @@ export class FactoryRuntime {
     if (job.state.startsWith("awaiting_")) return;
     if (["done", "failed", "paused", "rejected", "intake", "inbox"].includes(job.state)) return;
     if (this.isJobRunning(jobId)) return;
-    if (!isRunnableLaneState(job.state)) return;
-    // HITL after planning and tech spec. Auto-continue triage→planning, tasks→impl, impl→review.
-    const auto =
-      (job.state === "requirements" && job.lastActiveState === "triage") ||
-      job.state === "implementation" ||
-      job.state === "review" ||
-      job.state === "pull_request";
-    if (!auto) return;
+    const pipeline = await loadPipelineForProject(job.projectId);
+    if (!isRunnableLaneState(pipeline, job.state)) return;
     void this.invokeJob(job, "continue");
   }
 
@@ -225,7 +249,8 @@ export class FactoryRuntime {
     resume?: HitlResume,
     update?: Partial<FactoryStateType>,
   ) {
-    if (!this.graph) throw new Error("runtime not started");
+    const graph = await this.graphForJob(job);
+    const pipeline = await loadPipelineForProject(job.projectId);
     await getDb()
       .update(jobs)
       .set({ lockedBy: String(process.pid), lockedAt: nowIso() })
@@ -237,18 +262,18 @@ export class FactoryRuntime {
     };
     try {
       if (kind === "resume") {
-        return await this.graph.invoke(new Command({ resume, update }), config);
+        return await graph.invoke(new Command({ resume, update }), config);
       }
-      const dest = graphNodeForState(job.state);
+      const dest = graphNodeForState(job.state, pipeline);
       if (!dest) return null;
       if (!tuple) {
         const seed = await seedFactoryState(job, dest);
-        if (dest === "triage_draft") {
-          return await this.graph.invoke({ ...seed, ...update }, config);
+        if (dest === pipeline.firstAgentNode) {
+          return await graph.invoke({ ...seed, ...update }, config);
         }
-        return await this.graph.invoke(new Command({ goto: dest, update: { ...seed, ...update } }), config);
+        return await graph.invoke(new Command({ goto: dest, update: { ...seed, ...update } }), config);
       }
-      return await this.graph.invoke(new Command({ goto: dest, update }), config);
+      return await graph.invoke(new Command({ goto: dest, update }), config);
     } catch (err) {
       if (err instanceof Error && (err.name === "GraphInterrupt" || err.name === "AbortError")) {
         return null;
@@ -374,17 +399,8 @@ export class FactoryRuntime {
       void this.invokeJob(job, tuple ? "continue" : "first");
       return;
     }
-    if (
-      [
-        "triage",
-        "requirements",
-        "tech_spec",
-        "tasks",
-        "implementation",
-        "review",
-        "pull_request",
-      ].includes(job.state)
-    ) {
+    const pipeline = await loadPipelineForProject(job.projectId);
+    if (isRunnableLaneState(pipeline, job.state)) {
       void this.invokeJob(job, tuple ? "continue" : "first");
     }
   }
@@ -437,6 +453,133 @@ export class FactoryRuntime {
     await getDb().update(jobs).set({ worktreePath: dest, updatedAt: nowIso() }).where(eq(jobs.id, id));
     await logEvent({ projectId, jobId: id, event: "job.upsert", payload: { state: "intake" } });
     return id;
+  }
+
+  async ingestExternalIssue(input: {
+    projectId: string;
+    source: "github" | "linear" | "jira";
+    externalKey: string;
+    issueNumber: number | null;
+    title: string;
+    body: string;
+    url: string;
+    autoTriage?: boolean;
+  }): Promise<{ id: string; created: boolean; triaged: boolean }> {
+    const project = (await getDb().select().from(projects).where(eq(projects.id, input.projectId)))[0];
+    if (!project) throw new Error("project not found");
+
+    const existing = (
+      await getDb()
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.projectId, input.projectId), eq(jobs.externalKey, input.externalKey), isNull(jobs.archivedAt)))
+        .limit(1)
+    )[0];
+    if (existing) {
+      if (existing.state === "intake" || existing.state === "inbox") {
+        await getDb()
+          .update(jobs)
+          .set({
+            issueTitle: input.title,
+            issueBody: input.body,
+            issueUrl: input.url || existing.issueUrl,
+            updatedAt: nowIso(),
+          })
+          .where(eq(jobs.id, existing.id));
+      }
+      return { id: existing.id, created: false, triaged: false };
+    }
+
+    if (input.source === "github" && input.issueNumber && input.issueNumber > 0) {
+      const byNumber = (
+        await getDb()
+          .select()
+          .from(jobs)
+          .where(
+            and(eq(jobs.projectId, input.projectId), eq(jobs.issueNumber, input.issueNumber), isNull(jobs.archivedAt)),
+          )
+          .limit(1)
+      )[0];
+      if (byNumber) {
+        if (!byNumber.externalKey) {
+          await getDb()
+            .update(jobs)
+            .set({ externalKey: input.externalKey, source: input.source, updatedAt: nowIso() })
+            .where(eq(jobs.id, byNumber.id));
+        }
+        return { id: byNumber.id, created: false, triaged: false };
+      }
+    }
+
+    let issueNumber = input.issueNumber && input.issueNumber > 0 && input.source === "github" ? input.issueNumber : 0;
+    if (issueNumber <= 0) {
+      const minRow = await getDb()
+        .select({ n: sql<number>`coalesce(min(${jobs.issueNumber}), 0)` })
+        .from(jobs)
+        .where(and(eq(jobs.projectId, input.projectId), sql`${jobs.issueNumber} < 0`));
+      issueNumber = Number(minRow[0]?.n ?? 0) - 1;
+    }
+
+    const id = randomUUID();
+    const branch = branchName(issueNumber, input.title, id);
+    const now = nowIso();
+    await getDb().insert(jobs).values({
+      id,
+      projectId: input.projectId,
+      issueNumber,
+      issueTitle: input.title,
+      issueBody: input.body,
+      issueUrl: input.url,
+      state: "intake",
+      lastActiveState: "intake",
+      boardColumn: "intake",
+      branch,
+      source: input.source,
+      externalKey: input.externalKey,
+      createdAt: now,
+      updatedAt: now,
+    });
+    try {
+      const dest = await addJobWorktree({
+        rootPath: project.rootPath,
+        projectId: input.projectId,
+        jobId: id,
+        branch,
+        defaultBranch: project.defaultBranch,
+      });
+      await getDb().update(jobs).set({ worktreePath: dest, updatedAt: nowIso() }).where(eq(jobs.id, id));
+    } catch (err) {
+      await logEvent({
+        projectId: input.projectId,
+        jobId: id,
+        level: "warn",
+        event: "job.worktree_failed",
+        payload: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
+    await logEvent({
+      projectId: input.projectId,
+      jobId: id,
+      event: "job.upsert",
+      payload: { state: "intake", source: input.source, externalKey: input.externalKey },
+    });
+
+    let triaged = false;
+    if (input.autoTriage) {
+      try {
+        await this.sendToTriage(id);
+        triaged = true;
+      } catch (err) {
+        await logEvent({
+          projectId: input.projectId,
+          jobId: id,
+          level: "warn",
+          event: "job.auto_triage_skipped",
+          payload: { error: err instanceof Error ? err.message : String(err) },
+        });
+      }
+    }
+    return { id, created: true, triaged };
   }
 
   async sendToTriage(jobId: string, model?: string) {
@@ -508,25 +651,19 @@ export class FactoryRuntime {
 
   async restartFromStep(jobId: string, step: RestartStepId) {
     await this.stopAgent(jobId);
-    const def = RESTART_STEPS.find((s) => s.id === step);
+    const jobRow = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0];
+    const pipeline = jobRow
+      ? await loadPipelineForProject(jobRow.projectId)
+      : resolvePipeline(DEFAULT_PIPELINE);
+    const def = pipeline.restartSteps.find((s) => s.id === step) ?? RESTART_STEPS.find((s) => s.id === step);
     if (!def) throw new Error(`unknown step ${step}`);
-    const clearByStep: Record<RestartStepId, ArtifactKind[]> = {
-      intake: ["triage", "fr", "tech_spec", "task_graph", "review", "pr", "context"],
-      triage: ["triage", "fr", "tech_spec", "task_graph", "review", "pr", "context"],
-      planning: ["fr", "tech_spec", "task_graph", "review", "pr", "context"],
-      tech_spec: ["tech_spec", "task_graph", "review", "pr", "context"],
-      tasks: ["task_graph", "review", "pr", "context"],
-      implementation: ["review", "pr", "context"],
-      review: ["review", "pr", "context"],
-    };
-    const clear = clearByStep[step];
+    const clear = artifactsFromStep(pipeline, step);
     if (clear.length) {
       await getDb()
         .delete(artifacts)
         .where(and(eq(artifacts.jobId, jobId), inArray(artifacts.kind, clear)));
     }
-    trimSessionsFromStep(jobId, step);
-    const jobRow = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0];
+    trimSessionsFromStep(jobId, step, pipeline);
     if (jobRow?.worktreePath) {
       const docDir = path.join(
         jobRow.worktreePath,
@@ -534,60 +671,7 @@ export class FactoryRuntime {
         "issues",
         String(Math.abs(jobRow.issueNumber)),
       );
-      const laterDocs: Record<RestartStepId, string[]> = {
-        intake: [
-          "requirements.mdx",
-          "requirements.md",
-          "requirements.visualplan.json",
-          "plan-spec.mdx",
-          "tech-spec.mdx",
-          "tech-spec.md",
-          "tech-spec.visualplan.json",
-          "tasks.json",
-          "review.md",
-          "review.json",
-          "pull-request.md",
-        ],
-        triage: [
-          "requirements.mdx",
-          "requirements.md",
-          "requirements.visualplan.json",
-          "plan-spec.mdx",
-          "tech-spec.mdx",
-          "tech-spec.md",
-          "tech-spec.visualplan.json",
-          "tasks.json",
-          "review.md",
-          "review.json",
-          "pull-request.md",
-        ],
-        planning: [
-          "requirements.mdx",
-          "requirements.md",
-          "requirements.visualplan.json",
-          "plan-spec.mdx",
-          "tech-spec.mdx",
-          "tech-spec.md",
-          "tech-spec.visualplan.json",
-          "tasks.json",
-          "review.md",
-          "review.json",
-          "pull-request.md",
-        ],
-        tech_spec: [
-          "tech-spec.mdx",
-          "tech-spec.md",
-          "tech-spec.visualplan.json",
-          "tasks.json",
-          "review.md",
-          "review.json",
-          "pull-request.md",
-        ],
-        tasks: ["tasks.json", "review.md", "review.json", "pull-request.md"],
-        implementation: ["review.md", "review.json", "pull-request.md"],
-        review: ["review.md", "review.json", "pull-request.md"],
-      };
-      for (const name of laterDocs[step]) {
+      for (const name of docsFromStep(pipeline, step)) {
         try {
           fs.unlinkSync(path.join(docDir, name));
         } catch {
@@ -609,7 +693,7 @@ export class FactoryRuntime {
       .where(eq(jobs.id, jobId));
     this.stopping.delete(jobId);
     await this.checkpointer?.deleteThread(jobId);
-    await restoreContextBeforeStep(jobId, step);
+    await restoreContextBeforeStep(jobId, step, pipeline);
     const job = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0];
     if (!job) throw new Error("job not found");
     await logEvent({
@@ -618,7 +702,8 @@ export class FactoryRuntime {
       event: "job.upsert",
       payload: { state: def.state, restartFrom: step },
     });
-    if (step === "intake") return { ok: true, parked: "intake" };
+    const intake = pipeline.lanes.find((l) => l.kind === "intake");
+    if (step === (intake?.restartId ?? "intake")) return { ok: true, parked: intake?.state ?? "intake" };
     return this.invokeJob(job, "continue");
   }
 
@@ -695,32 +780,27 @@ export class FactoryRuntime {
       if (items.length === 0) {
         items = await listOpenFactoryIssues(pat, project.repoOwner, project.repoName);
       }
+      const intake = intakeFromProject(project);
       let claimed = 0;
       for (const issue of items) {
         if (claimed >= 10) break;
         try {
-          const id = randomUUID();
-          const now = nowIso();
-          const branch = branchName(issue.number, issue.title, id);
-          await getDb().insert(jobs).values({
-            id,
+          const ingested = await this.ingestExternalIssue({
             projectId,
+            source: "github",
+            externalKey: `github:${project.repoOwner}/${project.repoName}#${issue.number}`.toLowerCase(),
             issueNumber: issue.number,
-            issueTitle: issue.title,
-            issueBody: issue.body ?? "",
-            issueUrl: issue.html_url,
-            state: "intake",
-            lastActiveState: "intake",
-            boardColumn: "intake",
-            branch,
-            createdAt: now,
-            updatedAt: now,
+            title: issue.title,
+            body: issue.body ?? "",
+            url: issue.html_url,
+            autoTriage: intake.autoTriage,
           });
+          if (ingested.created) claimed += 1;
           const label = await addClaimedLabel(pat, project.repoOwner, project.repoName, issue.number);
           if (label.status >= 400) {
             await logEvent({
               projectId,
-              jobId: id,
+              jobId: ingested.id,
               level: "error",
               event: "poller.label_failed",
               payload: { status: label.status },
@@ -733,18 +813,6 @@ export class FactoryRuntime {
             );
             cleanup();
           }
-          const dest = await addJobWorktree({
-            rootPath: project.rootPath,
-            projectId,
-            jobId: id,
-            branch,
-            defaultBranch: project.defaultBranch,
-          });
-          await getDb()
-            .update(jobs)
-            .set({ worktreePath: dest, updatedAt: nowIso() })
-            .where(eq(jobs.id, id));
-          claimed += 1;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (!/UNIQUE/.test(msg)) {
@@ -772,7 +840,11 @@ export class FactoryRuntime {
   }
 }
 
-async function restoreContextBeforeStep(jobId: string, step: RestartStepId) {
+async function restoreContextBeforeStep(
+  jobId: string,
+  step: RestartStepId,
+  _pipeline?: ResolvedPipeline,
+) {
   const keep =
     step === "planning"
       ? await loadLatestArtifact(jobId, "triage")

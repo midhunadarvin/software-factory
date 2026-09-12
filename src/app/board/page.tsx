@@ -105,7 +105,11 @@ function BoardInner() {
           </p>
         </div>
       ) : (
-        <Kanban projectId={projectId} cards={cards.data ?? []} />
+        <Kanban
+          projectId={projectId}
+          cards={cards.data ?? []}
+          columns={project?.pipeline?.columns}
+        />
       )}
       </AgentGate>
     </div>

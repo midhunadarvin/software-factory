@@ -1,0 +1,10 @@
+node_modules
+.next
+var
+.git
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+dist
+worktrees

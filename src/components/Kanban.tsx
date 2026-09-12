@@ -6,7 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { IntakeLaunch } from "@/components/IntakeLaunch";
 
-const LANES = [
+export type BoardLane = { id: string; label: string; n: string };
+
+const DEFAULT_LANES: BoardLane[] = [
   { id: "intake", label: "Intake", n: "00" },
   { id: "triage", label: "Triage", n: "01" },
   { id: "planning", label: "Planning", n: "03" },
@@ -15,7 +17,7 @@ const LANES = [
   { id: "implementation", label: "Implementation", n: "06" },
   { id: "pull_request", label: "PR", n: "07" },
   { id: "done", label: "Done", n: "08" },
-] as const;
+];
 
 export type Card = {
   id: string;
@@ -41,14 +43,23 @@ const badgeVariant = {
   queued: "queued",
 } as const;
 
-export function Kanban({ projectId, cards }: { projectId: string; cards: Card[] }) {
+export function Kanban({
+  projectId,
+  cards,
+  columns,
+}: {
+  projectId: string;
+  cards: Card[];
+  columns?: BoardLane[];
+}) {
   const router = useRouter();
+  const lanes = columns?.length ? columns : DEFAULT_LANES;
   return (
-    <div className="grid grid-cols-1 gap-3 overflow-x-auto p-4 md:grid-cols-3 xl:grid-cols-8">
-      {LANES.map((lane) => {
+    <div className="flex gap-3 overflow-x-auto p-4">
+      {lanes.map((lane) => {
         const laneCards = cards.filter((c) => c.column === lane.id);
         return (
-          <section key={lane.id} className="flex min-h-[62vh] min-w-[220px] flex-col rounded-xl bg-muted/50 p-2">
+          <section key={lane.id} className="flex min-h-[62vh] w-[220px] shrink-0 flex-col rounded-xl bg-muted/50 p-2">
             <header className="flex items-baseline justify-between px-2 py-2">
               <h3 className="text-[11px] font-medium tracking-[0.14em] text-muted-foreground uppercase">
                 <span className="mr-1.5 font-mono text-[10px] opacity-60">{lane.n}</span>

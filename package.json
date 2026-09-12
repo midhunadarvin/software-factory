@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "start": "NODE_ENV=production tsx src/server.ts",
+    "docker:build": "docker build -t software-factory .",
+    "docker:up": "docker compose up --build -d",
     "build": "next build",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -46,6 +48,7 @@
     "superjson": "^2.2.2",
     "tailwind-merge": "^3.6.0",
     "tailwindcss": "^4.3.3",
+    "tsx": "^4.20.5",
     "yaml": "^2.9.0",
     "zod": "^3.25.76"
   },
@@ -54,7 +57,6 @@
     "@types/node": "^24.3.0",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
-    "tsx": "^4.20.5",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
   }

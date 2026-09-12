@@ -10,16 +10,7 @@ import type {
 
 export const LaneContextSchema = z.object({
   version: z.literal(1),
-  fromLane: z.enum([
-    "intake",
-    "triage",
-    "requirements",
-    "tech_spec",
-    "tasks",
-    "implementation",
-    "review",
-    "pull_request",
-  ]),
+  fromLane: z.string().min(1),
   summary: z.string().min(1).max(4000),
   bullets: z.array(z.string()).max(40).default([]),
 });

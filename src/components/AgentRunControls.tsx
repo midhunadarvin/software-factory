@@ -11,13 +11,16 @@ export function AgentRunControls({
   jobId,
   running,
   defaultStep,
+  steps,
 }: {
   jobId: string;
   running: boolean;
   defaultStep?: string;
+  steps?: readonly { id: string; label: string }[];
 }) {
   const utils = trpc.useUtils();
-  const [step, setStep] = useState(defaultStep && RESTART_STEPS.some((s) => s.id === defaultStep) ? defaultStep : "planning");
+  const restartSteps = steps?.length ? steps : RESTART_STEPS;
+  const [step, setStep] = useState(defaultStep && restartSteps.some((s) => s.id === defaultStep) ? defaultStep : restartSteps[0]?.id ?? "planning");
   const stop = trpc.jobs.stop.useMutation({
     onSuccess: () => {
       void utils.jobs.get.invalidate({ id: jobId });
@@ -55,7 +58,7 @@ export function AgentRunControls({
             disabled={busy}
             onChange={(e) => setStep(e.target.value)}
           >
-            {RESTART_STEPS.map((s) => (
+            {restartSteps.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.label}
               </option>
@@ -67,7 +70,7 @@ export function AgentRunControls({
             onClick={() =>
               restart.mutate({
                 id: jobId,
-                step: step as (typeof RESTART_STEPS)[number]["id"],
+                step,
               })
             }
           >

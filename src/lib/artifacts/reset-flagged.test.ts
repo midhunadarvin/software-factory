@@ -62,6 +62,63 @@ describe("resetFlaggedTasks", () => {
     expect(nextPending(pending)?.id).toBe("T-2");
   });
 
+  it("resets failed tasks even without a matching finding", () => {
+    const next = resetFlaggedTasks(
+      {
+        version: 1,
+        tasks: [
+          { id: "T-1", title: "a", files: ["x.ts"], dependsOn: [], acceptance: ["ok"], status: "failed" },
+          { id: "T-2", title: "b", files: ["y.ts"], dependsOn: ["T-1"], acceptance: ["ok"], status: "pending" },
+        ],
+      },
+      {
+        version: 1,
+        summary: "n",
+        verdict: "request_changes",
+        findings: [],
+        filesChanged: [],
+        computedDiffs: [],
+      },
+    );
+    expect(next.tasks[0]?.status).toBe("pending");
+  });
+
+  it("reopens the last task when every task is done and nothing was flagged", () => {
+    const next = resetFlaggedTasks(
+      {
+        version: 1,
+        tasks: [
+          { id: "T-1", title: "a", files: ["a.ts"], dependsOn: [], acceptance: ["ok"], status: "done" },
+          { id: "T-2", title: "b", files: ["b.ts"], dependsOn: ["T-1"], acceptance: ["ok"], status: "done" },
+        ],
+      },
+      {
+        version: 1,
+        summary: "n",
+        verdict: "request_changes",
+        findings: [{ id: "F-1", file: "other.ts", severity: "info", title: "n", body: "n" }],
+        filesChanged: [],
+        computedDiffs: [],
+      },
+    );
+    expect(next.tasks.map((t) => t.status)).toEqual(["done", "pending"]);
+  });
+
+  it("returns review_draft only when nothing is pending", () => {
+    expect(
+      nextStageAfterTask({
+        version: 1,
+        tasks: [{ id: "T-1", title: "a", files: [], dependsOn: [], acceptance: ["ok"], status: "done" }],
+      }),
+    ).toBe("review_draft");
+    expect(
+      nextStageAfterTask({
+        version: 1,
+        tasks: [{ id: "T-1", title: "a", files: [], dependsOn: [], acceptance: ["ok"], status: "pending" }],
+      }),
+    ).toBe("implementation");
+  });
+
   it("leaves implementation when a later task is still pending", () => {
     const pending = {
       ...graph,

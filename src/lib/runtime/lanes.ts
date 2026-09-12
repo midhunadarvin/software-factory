@@ -1,125 +1,76 @@
-import type { BoardColumn, JobState } from "./types";
-
-export type LaneKey =
-  | "intake"
-  | "triage"
-  | "requirements"
-  | "tech_spec"
-  | "tasks"
-  | "implementation"
-  | "review"
-  | "pull_request"
-  | "done";
+import { DEFAULT_PIPELINE } from "./pipeline/default";
+import {
+  displayLaneName as displayLaneNameResolved,
+  graphNodeForState as graphNodeForStateResolved,
+  isRunnableLaneState as isRunnableLaneStateResolved,
+  laneByKey as laneByKeyResolved,
+  laneForJobState as laneForJobStateResolved,
+  nextLane as nextLaneResolved,
+  resolvePipeline,
+  stepIndex as stepIndexResolved,
+  type ResolvedLane,
+  type ResolvedPipeline,
+  type RestartStep,
+} from "./pipeline/resolve";
+export type LaneKey = string;
 
 export type LaneDef = {
-  key: LaneKey;
-  state: JobState;
-  column: BoardColumn;
+  key: string;
+  state: string;
+  column: string;
   graphNode: string;
-  next: LaneKey | null;
+  next: string | null;
 };
 
-export const LANES: LaneDef[] = [
-  { key: "intake", state: "intake", column: "intake", graphNode: "intake", next: "triage" },
-  { key: "triage", state: "triage", column: "triage", graphNode: "triage_draft", next: "requirements" },
-  {
-    key: "requirements",
-    state: "requirements",
-    column: "planning",
-    graphNode: "requirements_draft",
-    next: "tech_spec",
-  },
-  { key: "tech_spec", state: "tech_spec", column: "tech_spec", graphNode: "tech_spec_draft", next: "tasks" },
-  { key: "tasks", state: "tasks", column: "tasks", graphNode: "tasks_draft", next: "implementation" },
-  {
-    key: "implementation",
-    state: "implementation",
-    column: "implementation",
-    graphNode: "implementation",
-    next: "review",
-  },
-  { key: "review", state: "review", column: "pull_request", graphNode: "review_draft", next: "pull_request" },
-  {
-    key: "pull_request",
-    state: "pull_request",
-    column: "pull_request",
-    graphNode: "pull_request",
-    next: "done",
-  },
-  { key: "done", state: "done", column: "done", graphNode: "done", next: null },
-];
+const DEFAULT_RESOLVED = resolvePipeline(DEFAULT_PIPELINE);
 
-const BY_KEY = new Map(LANES.map((l) => [l.key, l]));
-
-export function laneByKey(key: string): LaneDef | undefined {
-  return BY_KEY.get(key as LaneKey);
+function asLaneDef(lane: ResolvedLane): LaneDef {
+  return {
+    key: lane.id,
+    state: lane.state,
+    column: lane.column,
+    graphNode: lane.graphNode,
+    next: lane.next,
+  };
 }
 
-export function laneForJobState(state: string): LaneDef | undefined {
-  if (state === "inbox") return BY_KEY.get("intake");
-  if (state === "awaiting_requirements_approval") return BY_KEY.get("requirements");
-  if (state === "awaiting_tech_spec_approval") return BY_KEY.get("tech_spec");
-  if (state === "awaiting_tasks_approval") return BY_KEY.get("tasks");
-  if (state === "awaiting_review_approval") return BY_KEY.get("review");
-  if (state === "awaiting_pr_approval") return BY_KEY.get("pull_request");
-  return LANES.find((l) => l.state === state);
+export const LANES: LaneDef[] = DEFAULT_RESOLVED.lanes.map(asLaneDef);
+
+export const RESTART_STEPS: readonly RestartStep[] = DEFAULT_RESOLVED.restartSteps;
+
+export type RestartStepId = string;
+
+export function resolvedPipeline(pipeline?: ResolvedPipeline): ResolvedPipeline {
+  return pipeline ?? DEFAULT_RESOLVED;
 }
 
-export function nextLane(state: string): LaneDef | undefined {
-  const current = laneForJobState(state);
-  if (!current?.next) return undefined;
-  return BY_KEY.get(current.next);
+export function laneByKey(key: string, pipeline?: ResolvedPipeline): LaneDef | undefined {
+  const lane = laneByKeyResolved(resolvedPipeline(pipeline), key);
+  return lane ? asLaneDef(lane) : undefined;
 }
 
-export function graphNodeForState(state: string): string | undefined {
-  if (["done", "failed", "rejected", "paused", "intake", "inbox"].includes(state)) return undefined;
-  if (state === "awaiting_pr_approval") return "pr_gate";
-  return laneForJobState(state)?.graphNode;
+export function laneForJobState(state: string, pipeline?: ResolvedPipeline): LaneDef | undefined {
+  const lane = laneForJobStateResolved(resolvedPipeline(pipeline), state);
+  return lane ? asLaneDef(lane) : undefined;
 }
 
-export const RESTART_STEPS = [
-  { id: "intake", label: "Intake", state: "intake" as const, column: "intake" as const },
-  { id: "triage", label: "Triage", state: "triage" as const, column: "triage" as const },
-  { id: "planning", label: "Planning", state: "requirements" as const, column: "planning" as const },
-  { id: "tech_spec", label: "Tech spec", state: "tech_spec" as const, column: "tech_spec" as const },
-  { id: "tasks", label: "Tasks", state: "tasks" as const, column: "tasks" as const },
-  { id: "implementation", label: "Implementation", state: "implementation" as const, column: "implementation" as const },
-  { id: "review", label: "Review", state: "review" as const, column: "pull_request" as const },
-] as const;
-
-export type RestartStepId = (typeof RESTART_STEPS)[number]["id"];
-
-export function displayLaneName(stateOrLane: string): string {
-  const lane = laneForJobState(stateOrLane) ?? laneByKey(stateOrLane);
-  if (!lane) return stateOrLane.replaceAll("_", " ");
-  if (lane.column === "planning") return "planning";
-  if (lane.column === "tech_spec") return "tech spec";
-  if (lane.column === "pull_request") return lane.key === "review" ? "review" : "PR";
-  if (lane.column === "done") return "done";
-  if (lane.column === "intake") return "intake";
-  return lane.column.replaceAll("_", " ");
+export function nextLane(state: string, pipeline?: ResolvedPipeline): LaneDef | undefined {
+  const lane = nextLaneResolved(resolvedPipeline(pipeline), state);
+  return lane ? asLaneDef(lane) : undefined;
 }
 
-export function stepIndex(stepOrLane: string): number {
-  const id =
-    stepOrLane === "requirements"
-      ? "planning"
-      : stepOrLane === "pull_request"
-        ? "review"
-        : stepOrLane === "inbox"
-          ? "intake"
-          : stepOrLane;
-  return RESTART_STEPS.findIndex((s) => s.id === id);
+export function graphNodeForState(state: string, pipeline?: ResolvedPipeline): string | undefined {
+  return graphNodeForStateResolved(resolvedPipeline(pipeline), state);
 }
 
-export function isRunnableLaneState(state: string): boolean {
-  return [
-    "triage",
-    "requirements",
-    "tech_spec",
-    "tasks",
-    "implementation",
-    "review",
-    "pull_request",
-  ].includes(state);
+export function displayLaneName(stateOrLane: string, pipeline?: ResolvedPipeline): string {
+  return displayLaneNameResolved(resolvedPipeline(pipeline), stateOrLane);
+}
+
+export function stepIndex(stepOrLane: string, pipeline?: ResolvedPipeline): number {
+  return stepIndexResolved(resolvedPipeline(pipeline), stepOrLane);
+}
+
+export function isRunnableLaneState(state: string, pipeline?: ResolvedPipeline): boolean {
+  return isRunnableLaneStateResolved(resolvedPipeline(pipeline), state);
 }

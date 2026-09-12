@@ -23,7 +23,7 @@ type ArtifactRow = {
   body: string;
 };
 
-const LANES = [
+const DEFAULT_LANES = [
   { id: "intake", label: "Intake" },
   { id: "triage", label: "Triage" },
   { id: "planning", label: "Planning" },
@@ -32,10 +32,14 @@ const LANES = [
   { id: "implementation", label: "Implementation" },
   { id: "pull_request", label: "PR" },
   { id: "done", label: "Done" },
-] as const;
+];
 
-function laneLabel(column?: string | null, state?: string | null) {
-  const fromCol = LANES.find((l) => l.id === column)?.label;
+function laneLabel(
+  column?: string | null,
+  state?: string | null,
+  lanes: { id: string; label: string }[] = DEFAULT_LANES,
+) {
+  const fromCol = lanes.find((l) => l.id === column)?.label;
   if (fromCol) return fromCol;
   if (state === "inbox" || state === "intake") return "Intake";
   if (state === "triage") return "Triage";
@@ -88,6 +92,7 @@ export function ApprovalWorkspace({
   const router = useRouter();
   const utils = trpc.useUtils();
   const job = trpc.jobs.get.useQuery({ id: jobId }, { refetchInterval: 1500 });
+  const project = trpc.projects.get.useQuery({ id: projectId }, { enabled: Boolean(projectId) });
   const arts = trpc.jobs.artifacts.useQuery({ id: jobId }, { refetchInterval: 2000 });
   const events = trpc.jobs.events.useQuery({ id: jobId }, { refetchInterval: 2500 });
   const session = trpc.jobs.session.useQuery({ id: jobId }, { refetchInterval: 2000 });
@@ -120,8 +125,9 @@ export function ApprovalWorkspace({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [openAsDraft, setOpenAsDraft] = useState(false);
 
+  const boardLanes = project.data?.pipeline?.columns ?? DEFAULT_LANES;
   const column = job.data?.column ?? "triage";
-  const currentLane = laneLabel(column, job.data?.state);
+  const currentLane = laneLabel(column, job.data?.state, boardLanes);
   const triage = latest(arts.data ?? [], "triage");
   const fr = latest(arts.data ?? [], "fr");
   const spec = latest(arts.data ?? [], "tech_spec");
@@ -176,9 +182,9 @@ export function ApprovalWorkspace({
           </p>
           <h1 className="text-2xl font-semibold tracking-tight">{job.data?.title ?? "Loading…"}</h1>
           <div className="mt-3 flex flex-wrap gap-1">
-            {LANES.map((lane) => {
+            {boardLanes.map((lane) => {
               const active = column === lane.id;
-              const passed = LANES.findIndex((l) => l.id === column) > LANES.findIndex((l) => l.id === lane.id);
+              const passed = boardLanes.findIndex((l) => l.id === column) > boardLanes.findIndex((l) => l.id === lane.id);
               return (
                 <Badge
                   key={lane.id}
@@ -442,6 +448,7 @@ export function ApprovalWorkspace({
                 jobId={jobId}
                 running={Boolean(session.data?.running)}
                 defaultStep={column === "pull_request" ? "review" : column}
+                steps={project.data?.pipeline?.restartSteps}
               />
             </CardContent>
           </Card>

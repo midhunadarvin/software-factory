@@ -45,8 +45,14 @@ export function worktreePath(projectId: string, jobId: string): string {
   return path.join(varDir(), "worktrees", projectId, jobId);
 }
 
+export function reposDir(): string {
+  return process.env.FACTORY_REPOS_DIR
+    ? path.resolve(process.env.FACTORY_REPOS_DIR)
+    : path.join(os.homedir(), "software-factory", "repos");
+}
+
 export function defaultCloneDest(owner: string, repo: string): string {
-  return path.join(os.homedir(), "software-factory", "repos", owner, repo);
+  return path.join(reposDir(), owner, repo);
 }
 
 export function isInsideVar(absPath: string): boolean {

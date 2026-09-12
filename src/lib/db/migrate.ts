@@ -86,6 +86,33 @@ export function migrate(): void {
   } catch {
     /* already present */
   }
+  try {
+    sqlite.exec("ALTER TABLE projects ADD COLUMN pipeline text");
+  } catch {
+    /* already present */
+  }
+  try {
+    sqlite.exec("ALTER TABLE projects ADD COLUMN intake text");
+  } catch {
+    /* already present */
+  }
+  try {
+    sqlite.exec("ALTER TABLE jobs ADD COLUMN source text NOT NULL DEFAULT 'local'");
+  } catch {
+    /* already present */
+  }
+  try {
+    sqlite.exec("ALTER TABLE jobs ADD COLUMN external_key text");
+  } catch {
+    /* already present */
+  }
+  try {
+    sqlite.exec(
+      "CREATE UNIQUE INDEX IF NOT EXISTS jobs_external_key_uq ON jobs(project_id, external_key) WHERE archived_at IS NULL AND external_key IS NOT NULL",
+    );
+  } catch {
+    /* already present */
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

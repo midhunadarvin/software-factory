@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { encryptPat, decryptPat } from "../../crypto/pat";
 import { deriveKeys } from "../../crypto/hkdf";
@@ -18,11 +18,21 @@ import {
 } from "../../github/client";
 import { defaultCloneDest } from "../../paths";
 import { nowIso } from "../../paths";
+import { loadEnv } from "../../env";
+import { intakeFromProject, IntakeConfigSchema } from "../../intake/config";
 import { getRuntime, gcWorktree } from "../../runtime";
 import { requireAgent } from "../require-agent";
 import { protectedProcedure, router } from "../init";
+import {
+  DEFAULT_PIPELINE,
+  pipelineFromProject,
+  publicPipeline,
+  resolvePipeline,
+  tryParsePipeline,
+} from "../../runtime/pipeline";
 
 function publicProject(p: typeof projects.$inferSelect) {
+  const resolved = resolvePipeline(pipelineFromProject(p));
   return {
     id: p.id,
     name: p.name,
@@ -35,6 +45,9 @@ function publicProject(p: typeof projects.$inferSelect) {
     pollEnabled: Boolean(p.pollEnabled),
     hasPat: Boolean(p.githubPatCiphertext),
     createdAt: p.createdAt,
+    pipeline: publicPipeline(resolved),
+    pipelineCustom: Boolean(p.pipeline),
+    intake: intakeFromProject(p),
   };
 }
 
@@ -46,7 +59,10 @@ export const projectsRouter = router({
   get: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     const p = (await ctx.db.select().from(projects).where(eq(projects.id, input.id)))[0];
     if (!p) throw new TRPCError({ code: "NOT_FOUND" });
-    return publicProject(p);
+    return {
+      ...publicProject(p),
+      origin: loadEnv().origin.split(",")[0]?.trim() || "http://localhost:3000",
+    };
   }),
   validatePath: protectedProcedure
     .input(z.object({ rootPath: z.string().min(1) }))
@@ -250,6 +266,49 @@ export const projectsRouter = router({
     const r = await getRepo(pat, p.repoOwner, p.repoName);
     return { ok: r.status < 400, remoteKind: "github" as const, status: r.status };
   }),
+  updatePipeline: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        pipeline: z.unknown().nullable(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const p = (await ctx.db.select().from(projects).where(eq(projects.id, input.id)))[0];
+      if (!p) throw new TRPCError({ code: "NOT_FOUND" });
+      const active = await ctx.db
+        .select()
+        .from(jobs)
+        .where(and(eq(jobs.projectId, input.id), isNull(jobs.archivedAt)));
+      const running = active.filter(
+        (j) =>
+          !["done", "rejected", "paused", "intake", "inbox"].includes(j.state) &&
+          !j.state.startsWith("awaiting_"),
+      );
+      if (running.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "Pause or finish running jobs before changing the pipeline",
+        });
+      }
+      if (input.pipeline == null) {
+        await ctx.db.update(projects).set({ pipeline: null, updatedAt: nowIso() }).where(eq(projects.id, p.id));
+        return { ok: true as const, pipeline: publicPipeline(resolvePipeline(DEFAULT_PIPELINE)), pipelineCustom: false };
+      }
+      const parsed = tryParsePipeline(input.pipeline);
+      if (!parsed.ok) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: parsed.error });
+      }
+      await ctx.db
+        .update(projects)
+        .set({ pipeline: JSON.stringify(parsed.pipeline), updatedAt: nowIso() })
+        .where(eq(projects.id, p.id));
+      return {
+        ok: true as const,
+        pipeline: publicPipeline(resolvePipeline(parsed.pipeline)),
+        pipelineCustom: true,
+      };
+    }),
   update: protectedProcedure
     .input(
       z.object({
@@ -257,6 +316,7 @@ export const projectsRouter = router({
         name: z.string().optional(),
         pollEnabled: z.boolean().optional(),
         defaultBranch: z.string().optional(),
+        intake: IntakeConfigSchema.optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -276,6 +336,7 @@ export const projectsRouter = router({
           name: input.name ?? p.name,
           pollEnabled: poll,
           defaultBranch: input.defaultBranch ?? p.defaultBranch,
+          intake: input.intake ? JSON.stringify(IntakeConfigSchema.parse(input.intake)) : p.intake,
           updatedAt: nowIso(),
         })
         .where(eq(projects.id, p.id));

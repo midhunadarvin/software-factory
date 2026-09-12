@@ -8,6 +8,7 @@ import {
   getSessionBundle,
   startSession,
   stopSession,
+  sessionWasStopped,
   trimSessionsFromStep,
 } from "./session-store";
 
@@ -67,5 +68,25 @@ describe("session-store", () => {
     expect(bundle.history.map((h) => h.lane)).toEqual(["triage"]);
     expect(bundle.history[0]?.thinking).toContain("triage notes");
     expect(bundle.current).toBeNull();
+  });
+
+  it("marks a stopped session so the agent loop can exit", () => {
+    startSession(JOB, "proj", "review");
+    expect(sessionWasStopped(JOB)).toBe(false);
+    stopSession(JOB, "operator");
+    expect(sessionWasStopped(JOB)).toBe(true);
+    expect(getSession(JOB)?.status).toBe("done");
+  });
+
+  it("trims from implementation without dropping planning history", () => {
+    startSession(JOB, "proj", "triage");
+    finishSession(JOB, "done");
+    startSession(JOB, "proj", "requirements");
+    finishSession(JOB, "done");
+    startSession(JOB, "proj", "implementation");
+    finishSession(JOB, "done");
+    trimSessionsFromStep(JOB, "implementation");
+    const bundle = getSessionBundle(JOB);
+    expect(bundle.history.map((h) => h.lane)).toEqual(["triage", "requirements"]);
   });
 });
