@@ -1,9 +1,11 @@
 import { getDb } from "../db/client";
 import { projects } from "../db/schema";
+import { matchProject } from "../integrations/match";
+import type { IncomingIssue } from "../integrations/types";
 import { logEvent } from "../runtime/events";
 import { getRuntime } from "../runtime";
-import { matchProject } from "./match";
-import type { IncomingIssue } from "./parse";
+
+export { readRawBody } from "../integrations/dispatch";
 
 export async function ingestIncomingIssue(issue: IncomingIssue): Promise<{
   ok: true;
@@ -34,8 +36,4 @@ export async function ingestIncomingIssue(issue: IncomingIssue): Promise<{
     payload: { source: issue.source, externalKey: issue.externalKey, triaged: result.triaged },
   });
   return { ok: true, ...result };
-}
-
-export async function readRawBody(req: Request): Promise<Buffer> {
-  return Buffer.from(await req.arrayBuffer());
 }

@@ -113,7 +113,15 @@ export function repoTools(
 export function inspectRepo(root: string): string {
   const top = listDir(root, ".", 2, 80);
   const lines = [`top-level (${top.length}):`, ...top.slice(0, 60).map((p) => `- ${p}`)];
-  for (const name of ["package.json", "tsconfig.json", "README.md", "test.js", "index.js"]) {
+  for (const name of [
+    "AGENTS.md",
+    ".factory/AGENTS.md",
+    "package.json",
+    "tsconfig.json",
+    "README.md",
+    "test.js",
+    "index.js",
+  ]) {
     try {
       const body = fs.readFileSync(path.join(root, name), "utf8");
       lines.push(`\n--- ${name} ---\n${body.slice(0, 4000)}`);

@@ -97,9 +97,24 @@ Volumes:
 
 The container listens on `0.0.0.0:3000`. Health: `GET /api/health` (Compose/Docker check `db: true`).
 
+## State and restarts (dogfooding)
+
+Pipeline **config** and **job progress** live on disk under `{FACTORY_ROOT}/var/` (gitignored). A `pnpm dev` restart does not reset the board.
+
+| Path | What it keeps |
+|---|---|
+| `var/factory.sqlite` | Projects, pipeline JSON, intake settings, jobs, artifacts, events |
+| `var/checkpoints.sqlite` | LangGraph interrupts (HITL gates) |
+| `var/sessions/` | Agent transcripts |
+| `var/worktrees/` | Isolated implementation checkouts |
+
+On boot the runtime reopens those files, leaves **Intake** and **awaiting approval** cards parked, and continues only runnable lanes (triage / impl / …). Tickets do not jump back to Intake.
+
+When you attach this repo as a Factory project, keep using the same `FACTORY_ROOT` (default: the repo). Implementation runs in `var/worktrees/`, not in the checkout that is running the dev server. Do not delete `var/` if you want history. Coding agents should follow `AGENTS.md` (architecture and extension rules).
+
 ## Webhooks → intake
 
-The factory exposes unauthenticated POST endpoints. Auth is the provider signature (or a shared secret for Jira). Middleware does **not** require the app-password cookie.
+Intake integrations are **plugins**. GitHub, Linear, and Jira load by default; each one owns verify / parse / project matching and appears in Settings. The factory exposes unauthenticated POST endpoints at `/api/webhooks/<plugin-id>`. Auth is the provider signature (or a shared secret for Jira). Middleware does **not** require the app-password cookie.
 
 Set `FACTORY_ORIGIN` to the public base URL, then use:
 
@@ -155,6 +170,26 @@ Jira Cloud issue webhooks do not send an HMAC. The factory checks a shared secre
 4. Create a Jira issue in that project.
 
 If the secret is missing on the server, the endpoint returns **503** so you notice before configuring the provider.
+
+### Adding an integration plugin
+
+GitHub, Linear, and Jira are **plugins** loaded at boot (`src/lib/integrations/registry.ts`). A new tracker is the same shape: verify the webhook, parse an issue, match it to a Factory project.
+
+1. Add `src/lib/integrations/plugins/<name>.ts` that exports an `IntegrationPlugin` (`id`, `secretEnv`, `verify`, `parse`, `match`, settings fields).
+2. Register it:
+
+```ts
+import { registerIntegration } from "@/lib/integrations";
+import { asanaPlugin } from "@/lib/integrations/plugins/asana";
+
+registerIntegration(asanaPlugin);
+```
+
+Call that from `src/lib/integrations/registry.ts` (next to the built-ins) or from `src/server.ts` before `runtime.start()`.
+
+3. Restart. Settings → Webhook intake lists the new provider. The endpoint is `{FACTORY_ORIGIN}/api/webhooks/<id>`.
+
+`id` must be snake_case (`asana`, `clickup`). Stored project intake is `{ [id]: { enabled, …fields } }`, same as `github` / `linear` / `jira`.
 
 ### Auto-triage
 

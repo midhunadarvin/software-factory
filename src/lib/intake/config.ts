@@ -1,37 +1,40 @@
 import { z } from "zod";
+import { listIntegrations } from "../integrations/registry";
+import type { IntegrationPlugin } from "../integrations/types";
+import { type IntakeConfig, pluginSettings } from "./settings";
 
-export const IntakeConfigSchema = z.object({
-  autoTriage: z.boolean().default(false),
-  github: z
-    .object({
-      enabled: z.boolean().default(true),
-      /** Empty = ingest every opened issue. Set e.g. "factory" to require that label. */
-      label: z.string().default(""),
-    })
-    .default({}),
-  linear: z
-    .object({
-      enabled: z.boolean().default(false),
-      teamId: z.string().default(""),
-      label: z.string().default(""),
-    })
-    .default({}),
-  jira: z
-    .object({
-      enabled: z.boolean().default(false),
-      projectKey: z.string().default(""),
-      label: z.string().default(""),
-    })
-    .default({}),
-});
-export type IntakeConfig = z.infer<typeof IntakeConfigSchema>;
+export type { IntakeConfig } from "./settings";
+export { pluginSettings };
 
-export const DEFAULT_INTAKE: IntakeConfig = IntakeConfigSchema.parse({});
+function providerSchema(plugin: IntegrationPlugin) {
+  const shape: z.ZodRawShape = {
+    enabled: z.boolean().default(plugin.defaultEnabled),
+  };
+  for (const field of plugin.settingsFields) {
+    shape[field.key] = z.string().default("");
+  }
+  return z.object(shape).passthrough().default({});
+}
+
+export function buildIntakeConfigSchema() {
+  const shape: z.ZodRawShape = {
+    autoTriage: z.boolean().default(false),
+  };
+  for (const plugin of listIntegrations()) {
+    shape[plugin.id] = providerSchema(plugin);
+  }
+  return z.object(shape).passthrough();
+}
+
+/** Latest schema from the current plugin registry. */
+export function IntakeConfigSchema() {
+  return buildIntakeConfigSchema();
+}
 
 export function parseIntake(raw: unknown): IntakeConfig {
-  if (raw == null || raw === "") return DEFAULT_INTAKE;
+  if (raw == null || raw === "") return buildIntakeConfigSchema().parse({}) as IntakeConfig;
   const value = typeof raw === "string" ? JSON.parse(raw) : raw;
-  return IntakeConfigSchema.parse(value);
+  return buildIntakeConfigSchema().parse(value) as IntakeConfig;
 }
 
 export function tryParseIntake(raw: unknown): { ok: true; intake: IntakeConfig } | { ok: false; error: string } {
@@ -43,7 +46,9 @@ export function tryParseIntake(raw: unknown): { ok: true; intake: IntakeConfig }
 }
 
 export function intakeFromProject(row: { intake?: string | null } | null | undefined): IntakeConfig {
-  if (!row?.intake) return DEFAULT_INTAKE;
+  if (!row?.intake) return parseIntake({});
   const parsed = tryParseIntake(row.intake);
-  return parsed.ok ? parsed.intake : DEFAULT_INTAKE;
+  return parsed.ok ? parsed.intake : parseIntake({});
 }
+
+export const DEFAULT_INTAKE: IntakeConfig = parseIntake({});

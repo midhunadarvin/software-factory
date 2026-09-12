@@ -24,6 +24,11 @@ export function getDb() {
 }
 
 export function closeDb() {
+  try {
+    sqlite?.pragma("wal_checkpoint(TRUNCATE)");
+  } catch {
+    /* closed or no WAL */
+  }
   sqlite?.close();
   sqlite = null;
   db = null;

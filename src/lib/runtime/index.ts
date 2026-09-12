@@ -13,7 +13,8 @@ import {
   listOpenFactoryIssues,
   searchFactoryIssues,
 } from "../github/client";
-import { nowIso, FACTORY_ROOT, invokePayloadPath } from "../paths";
+import { nowIso, factoryRoot, invokePayloadPath } from "../paths";
+import { closeDb } from "../db/client";
 import { intakeFromProject } from "../intake/config";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -132,6 +133,10 @@ export class FactoryRuntime {
     this.pollers.clear();
     releasePidfile();
     this.started = false;
+    this.graph = null;
+    this.graphs.clear();
+    this.checkpointer = null;
+    closeDb();
   }
 
   async withJobMutex<T>(jobId: string, fn: () => Promise<T>): Promise<T> {
@@ -302,10 +307,11 @@ export class FactoryRuntime {
   ): Promise<void> {
     const payloadPath = invokePayloadPath(job.id);
     fs.writeFileSync(payloadPath, JSON.stringify({ kind, resume, update: update ?? null }));
-    const script = path.join(FACTORY_ROOT, "src/scripts/run-job.ts");
+    const root = factoryRoot();
+    const script = path.join(root, "src/scripts/run-job.ts");
     const child = spawn(process.execPath, [...process.execArgv, script, job.id], {
-      cwd: FACTORY_ROOT,
-      env: { ...process.env, FACTORY_WORKER: "1", FACTORY_ROOT },
+      cwd: root,
+      env: { ...process.env, FACTORY_WORKER: "1", FACTORY_ROOT: root },
       stdio: ["ignore", "pipe", "pipe"],
     });
     this.workers.set(job.id, child);
@@ -386,9 +392,11 @@ export class FactoryRuntime {
   }
 
   private async recoverOne(job: typeof jobs.$inferSelect) {
-    const tuple = await this.checkpointer?.getTuple({ configurable: { thread_id: job.id } });
+    if (!this.checkpointer) this.checkpointer = openCheckpointer();
+    const graph = await this.graphForJob(job);
+    const tuple = await this.checkpointer.getTuple({ configurable: { thread_id: job.id } });
     const snap = tuple
-      ? await this.graph!.getState({ configurable: { thread_id: job.id } })
+      ? await graph.getState({ configurable: { thread_id: job.id } })
       : null;
     const waiting =
       job.state.startsWith("awaiting_") ||
@@ -457,7 +465,7 @@ export class FactoryRuntime {
 
   async ingestExternalIssue(input: {
     projectId: string;
-    source: "github" | "linear" | "jira";
+    source: string;
     externalKey: string;
     issueNumber: number | null;
     title: string;

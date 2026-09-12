@@ -3,6 +3,7 @@ import {
   DEFAULT_INTAKE,
   intakeFromProject,
   parseIntake,
+  pluginSettings,
   tryParseIntake,
 } from "./config";
 
@@ -25,9 +26,9 @@ describe("intake config", () => {
   it("fills missing provider blocks from a partial object or JSON string", () => {
     const fromObj = parseIntake({ autoTriage: true, linear: { enabled: true, teamId: "t1" } });
     expect(fromObj.autoTriage).toBe(true);
-    expect(fromObj.linear).toEqual({ enabled: true, teamId: "t1", label: "" });
-    expect(fromObj.github.enabled).toBe(true);
-    expect(fromObj.jira.enabled).toBe(false);
+    expect(pluginSettings(fromObj, "linear")).toMatchObject({ enabled: true, teamId: "t1", label: "" });
+    expect(pluginSettings(fromObj, "github").enabled).toBe(true);
+    expect(pluginSettings(fromObj, "jira").enabled).toBe(false);
 
     const fromJson = parseIntake(
       JSON.stringify({
@@ -36,9 +37,9 @@ describe("intake config", () => {
         jira: { enabled: true, projectKey: "ENG" },
       }),
     );
-    expect(fromJson.github.label).toBe("factory");
-    expect(fromJson.jira.projectKey).toBe("ENG");
-    expect(fromJson.linear.enabled).toBe(false);
+    expect(pluginSettings(fromJson, "github").label).toBe("factory");
+    expect(pluginSettings(fromJson, "jira").projectKey).toBe("ENG");
+    expect(pluginSettings(fromJson, "linear").enabled).toBe(false);
   });
 
   it("returns the default when a project stores invalid JSON", () => {

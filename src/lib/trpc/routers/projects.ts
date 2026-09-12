@@ -19,7 +19,8 @@ import {
 import { defaultCloneDest } from "../../paths";
 import { nowIso } from "../../paths";
 import { loadEnv } from "../../env";
-import { intakeFromProject, IntakeConfigSchema } from "../../intake/config";
+import { intakeFromProject, tryParseIntake } from "../../intake/config";
+import { publicIntegrations } from "../../integrations";
 import { getRuntime, gcWorktree } from "../../runtime";
 import { requireAgent } from "../require-agent";
 import { protectedProcedure, router } from "../init";
@@ -48,6 +49,7 @@ function publicProject(p: typeof projects.$inferSelect) {
     pipeline: publicPipeline(resolved),
     pipelineCustom: Boolean(p.pipeline),
     intake: intakeFromProject(p),
+    integrations: publicIntegrations(),
   };
 }
 
@@ -316,12 +318,18 @@ export const projectsRouter = router({
         name: z.string().optional(),
         pollEnabled: z.boolean().optional(),
         defaultBranch: z.string().optional(),
-        intake: IntakeConfigSchema.optional(),
+        intake: z.unknown().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const p = (await ctx.db.select().from(projects).where(eq(projects.id, input.id)))[0];
       if (!p) throw new TRPCError({ code: "NOT_FOUND" });
+      let intakeJson = p.intake;
+      if (input.intake !== undefined) {
+        const parsed = tryParseIntake(input.intake);
+        if (!parsed.ok) throw new TRPCError({ code: "BAD_REQUEST", message: parsed.error });
+        intakeJson = JSON.stringify(parsed.intake);
+      }
       const poll =
         p.remoteKind === "github" && p.githubPatCiphertext
           ? input.pollEnabled === undefined
@@ -336,7 +344,7 @@ export const projectsRouter = router({
           name: input.name ?? p.name,
           pollEnabled: poll,
           defaultBranch: input.defaultBranch ?? p.defaultBranch,
-          intake: input.intake ? JSON.stringify(IntakeConfigSchema.parse(input.intake)) : p.intake,
+          intake: intakeJson,
           updatedAt: nowIso(),
         })
         .where(eq(projects.id, p.id));

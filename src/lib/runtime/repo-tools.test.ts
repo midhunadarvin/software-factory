@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { grep, listDir, readFile, replaceInFile, writeFile } from "./repo-tools";
+import { grep, inspectRepo, listDir, readFile, replaceInFile, writeFile } from "./repo-tools";
 
 const root = path.join(os.tmpdir(), `factory-repo-tools-${process.pid}`);
 
@@ -19,6 +19,14 @@ describe("repo-tools", () => {
     expect(grep(root, { pattern: "return a \\+ b", path: "src" })).toMatch(/app\.js:2:/);
     expect(replaceInFile(root, "src/app.js", "a + b", "a - b")).toMatch(/replaced 1/);
     expect(readFile(root, "src/app.js")).toContain("a - b");
+  });
+
+  it("inlines AGENTS.md when inspectRepo is called", () => {
+    writeFile(root, "AGENTS.md", "# Agent conventions\nDo not add Express.\n");
+    writeFile(root, "package.json", "{\"name\":\"demo\"}\n");
+    const summary = inspectRepo(root);
+    expect(summary).toContain("AGENTS.md");
+    expect(summary).toContain("Do not add Express");
   });
 
   it("rejects path traversal", () => {

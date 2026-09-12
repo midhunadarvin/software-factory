@@ -102,6 +102,7 @@ function SettingsInner() {
         <IntakeSettings
           origin={p.origin}
           value={p.intake}
+          integrations={p.integrations}
           onChange={(intake) => update.mutate({ id, intake })}
         />
         <div className="mt-6">

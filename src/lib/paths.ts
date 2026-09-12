@@ -5,10 +5,16 @@ import { fileURLToPath } from "node:url";
 
 const MODULE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
-export const FACTORY_ROOT = path.resolve(process.env.FACTORY_ROOT ?? MODULE_ROOT);
+/** Repo / data root. Re-read from env so a restart with the same FACTORY_ROOT keeps `var/`. */
+export function factoryRoot(): string {
+  return path.resolve(process.env.FACTORY_ROOT ?? MODULE_ROOT);
+}
+
+/** Snapshot at import time. Prefer `factoryRoot()` when the env may change. */
+export const FACTORY_ROOT = factoryRoot();
 
 export function varDir(): string {
-  const dir = path.join(FACTORY_ROOT, "var");
+  const dir = path.join(factoryRoot(), "var");
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
