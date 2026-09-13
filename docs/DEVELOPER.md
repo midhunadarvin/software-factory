@@ -24,7 +24,7 @@ Required in `.env`:
 |---|---|
 | `FACTORY_SECRET` | 64 hex chars **or** `base64:` + ≥32 bytes. Derives PAT encryption and session HMAC. |
 | `FACTORY_APP_PASSWORD` | Cookie login. Change the example value. |
-| `XAI_API_KEY` or `OPENAI_API_KEY` | LLM. Without a working key the UI blocks attach/create. |
+| `FACTORY_LLM_API_KEY` or `OPENAI_API_KEY` or `XAI_API_KEY` | LLM. Without a working key the UI blocks attach/create. |
 
 Useful overrides:
 
@@ -32,12 +32,13 @@ Useful overrides:
 |---|---|---|
 | `FACTORY_ORIGIN` | `http://localhost:3000` | Public URL for browsers and webhooks |
 | `FACTORY_BIND` | `127.0.0.1:3000` | Use `0.0.0.0:3000` in Docker |
-| `OPENAI_COMPAT_BASE_URL` | `https://api.x.ai/v1` | API **root** ending in `/v1`, not `/chat/completions` |
-| `OPENAI_COMPAT_MODEL` | `grok-4.5` | GLM/Kimi/DeepSeek → chat completions; Grok/GPT → Responses |
+| `LLM_PROVIDER` | `opencode_go` (when a generic key is set) | Registered plugin id: `opencode_go`, `xai`, `openai`, `custom` |
+| `OPENAI_COMPAT_BASE_URL` | (unset) | Custom `/v1` root only. OpenCode Go is inferred from a generic key. |
+| `OPENAI_COMPAT_MODEL` | plugin default (`glm-5.3-flash` on Go) | Must be an id from `GET /models` |
 | `FACTORY_ROOT` | repo root | Where `var/` lives |
 | `FACTORY_VAR_MAX_GB` | `20` | Cap on `var/` |
 
-Restart `pnpm dev` after changing env. The factory probes `GET {OPENAI_COMPAT_BASE_URL}/models` before unlocking mutations.
+Restart `pnpm dev` after changing env. The factory probes `GET {resolved provider}/models` before unlocking mutations.
 
 ```sh
 pnpm dev          # http://127.0.0.1:3000 — FactoryRuntime + Next.js
@@ -69,6 +70,7 @@ Do not add a second Node service, worker, or database.
 | Jobs, graph, lanes | `src/lib/runtime/` |
 | Pipeline config | `src/lib/runtime/pipeline/` |
 | New issue tracker | `src/lib/integrations/plugins/` + `registerIntegration` |
+| New LLM backend | `src/lib/llm/plugins/` + `registerLlmProvider` |
 | Schema | `src/lib/db/schema.ts` **and** `src/lib/db/migrate.ts` |
 | Tests | colocated `*.test.ts` |
 
@@ -76,7 +78,7 @@ Path alias: `@/` → `src/`.
 
 ### Client vs server
 
-Client components **must not** import Node-only modules (`better-sqlite3`, `db/client`, `integrations/registry.ts`). Use `src/lib/intake/settings.ts` and data from tRPC.
+Client components **must not** import Node-only modules (`better-sqlite3`, `db/client`, `integrations/registry.ts`, `llm/registry.ts`). Use `src/lib/intake/settings.ts` and data from tRPC.
 
 ### Persistence
 
@@ -114,6 +116,29 @@ registerIntegration(asanaPlugin);
 3. Restart. Settings → Webhook intake lists the provider. Endpoint: `{FACTORY_ORIGIN}/api/webhooks/<id>`.
 
 Operator-facing webhook URLs: [WEBHOOKS.md](./WEBHOOKS.md).
+
+## Adding an LLM provider plugin
+
+`getModel()` must not grow per-vendor branches. A new backend is an `LlmProviderPlugin`.
+
+1. Add `src/lib/llm/plugins/<name>.ts` exporting an `LlmProviderPlugin`:
+
+   - `id` — snake_case (`openrouter`, `anthropic`)
+   - `match`, `listModels`, `apiStyle`, `createModel`
+   - Reuse `createChatModel` / `createResponsesModel` / `createMessagesModel` from `@/lib/llm` when the host is OpenAI- or Anthropic-shaped
+
+2. Register it in `src/lib/llm/registry.ts` (next to OpenCode Go / xAI / OpenAI / custom) or from `src/server.ts` **before** `runtime.start()`.
+
+```ts
+import { registerLlmProvider } from "@/lib/llm";
+import { openrouterPlugin } from "@/lib/llm/plugins/openrouter";
+
+registerLlmProvider(openrouterPlugin);
+```
+
+3. Restart. Set `LLM_PROVIDER=<id>` or make `match(env)` return true at a higher `priority` than OpenCode Go (40). Settings and intake list models from `plugin.listModels`.
+
+Do **not** probe the same API key against multiple third-party hosts.
 
 ## Adding a pipeline lane or HITL step
 

@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import { readLlmResolveEnv } from "./llm/env";
+import { resolveLlmProvider } from "./llm/resolve";
+import { normalizeLlmBaseUrl } from "./llm/url";
+
+export { normalizeLlmBaseUrl };
 
 export type FactoryKeys = {
   aesPat: Buffer;
@@ -61,35 +66,25 @@ export function loadEnv() {
 }
 
 export function llmConfigured(): boolean {
-  return Boolean(process.env.XAI_API_KEY || process.env.OPENAI_API_KEY);
-}
-
-/** Strip endpoint suffixes so the SDK can append /models or /chat/completions. */
-export function normalizeLlmBaseUrl(raw: string): string {
-  const trimmed = raw.trim();
-  try {
-    const parsed = new URL(trimmed);
-    parsed.pathname = parsed.pathname
-      .replace(/\/+$/, "")
-      .replace(/\/(chat\/completions|responses|models)$/i, "");
-    parsed.search = "";
-    parsed.hash = "";
-    return parsed.toString().replace(/\/$/, "");
-  } catch {
-    return trimmed.replace(/\/+$/, "").replace(/\/(chat\/completions|responses|models)$/i, "");
-  }
+  return Boolean(readLlmResolveEnv().apiKey);
 }
 
 export function llmBaseUrl(): string {
-  return normalizeLlmBaseUrl(process.env.OPENAI_COMPAT_BASE_URL ?? "https://api.x.ai/v1");
+  const resolved = resolveLlmProvider();
+  if (resolved) return resolved.baseUrl;
+  const env = readLlmResolveEnv();
+  if (env.baseUrl) return env.baseUrl;
+  return "https://opencode.ai/zen/go/v1";
 }
 
 export function llmModel(): string {
-  return process.env.OPENAI_COMPAT_MODEL ?? "grok-4.5";
+  const override = process.env.OPENAI_COMPAT_MODEL?.trim();
+  if (override) return override;
+  return resolveLlmProvider()?.plugin.defaultModel ?? "glm-5.3-flash";
 }
 
 export function llmApiKey(): string | undefined {
-  return process.env.XAI_API_KEY || process.env.OPENAI_API_KEY;
+  return resolveLlmProvider()?.apiKey ?? readLlmResolveEnv().apiKey;
 }
 
 export function allowedOrigins(): string[] {

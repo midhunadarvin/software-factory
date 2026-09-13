@@ -1,5 +1,7 @@
-import { llmApiKey, llmBaseUrl, llmConfigured, llmModel } from "../env";
-import { mergeLlmHeaders } from "./opencode-session";
+import { llmConfigured, llmModel } from "../env";
+import { readLlmResolveEnv } from "../llm/env";
+import { resolveLlmProvider } from "../llm/resolve";
+import { guardedLlmFetch } from "../llm/sdk";
 
 export type AgentStatus = {
   ready: boolean;
@@ -7,6 +9,7 @@ export type AgentStatus = {
   connected: boolean;
   model: string;
   baseUrl: string;
+  provider: string | null;
   error: string | null;
   checkedAt: string;
 };
@@ -26,10 +29,13 @@ export async function getAgentStatus(force = false): Promise<AgentStatus> {
 }
 
 export async function probeAgent(): Promise<AgentStatus> {
-  const baseUrl = llmBaseUrl().replace(/\/$/, "");
+  const env = readLlmResolveEnv();
+  const resolved = resolveLlmProvider();
   const model = llmModel();
   const configured = llmConfigured();
   const checkedAt = new Date().toISOString();
+  const baseUrl = resolved?.baseUrl ?? env.baseUrl ?? "https://opencode.ai/zen/go/v1";
+  const provider = resolved?.plugin.id ?? null;
   if (!configured) {
     return {
       ready: false,
@@ -37,62 +43,38 @@ export async function probeAgent(): Promise<AgentStatus> {
       connected: false,
       model,
       baseUrl,
+      provider,
       error:
-        "No agent API key. Set XAI_API_KEY (or OPENAI_API_KEY) and optionally OPENAI_COMPAT_BASE_URL / OPENAI_COMPAT_MODEL, then restart the factory. OPENAI_COMPAT_BASE_URL must be the /v1 root (e.g. https://opencode.ai/zen/go/v1), not /chat/completions.",
+        "No agent API key. Set FACTORY_LLM_API_KEY (OpenCode Go by default) or XAI_API_KEY, then restart the factory. Optional: LLM_PROVIDER=opencode_go|xai|openai|custom and OPENAI_COMPAT_BASE_URL for a custom /v1 root.",
       checkedAt,
     };
   }
-  const key = llmApiKey()!;
-  try {
-    const modelsUrl = `${baseUrl}/models`;
-    const modelsRes = await fetch(modelsUrl, {
-      headers: mergeLlmHeaders(modelsUrl, { Authorization: `Bearer ${key}` }),
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (modelsRes.ok) {
-      return {
-        ready: true,
-        configured: true,
-        connected: true,
-        model,
-        baseUrl,
-        error: null,
-        checkedAt,
-      };
-    }
-    const chatUrl = `${baseUrl}/chat/completions`;
-    const chatRes = await fetch(chatUrl, {
-      method: "POST",
-      headers: mergeLlmHeaders(chatUrl, {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      }),
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: "ping" }],
-        max_tokens: 1,
-      }),
-      signal: AbortSignal.timeout(12_000),
-    });
-    if (chatRes.ok || chatRes.status === 400) {
-      return {
-        ready: true,
-        configured: true,
-        connected: true,
-        model,
-        baseUrl,
-        error: null,
-        checkedAt,
-      };
-    }
-    const body = await chatRes.text().catch(() => "");
+  if (!resolved) {
     return {
       ready: false,
       configured: true,
       connected: false,
       model,
       baseUrl,
-      error: `Agent API rejected the key (${chatRes.status}). Check XAI_API_KEY / OPENAI_API_KEY and ${baseUrl}. ${body.slice(0, 180)}`,
+      provider,
+      error: "LLM provider could not be resolved. Set LLM_PROVIDER to a registered plugin id.",
+      checkedAt,
+    };
+  }
+  try {
+    await resolved.plugin.listModels({
+      apiKey: resolved.apiKey,
+      baseUrl: resolved.baseUrl,
+      fetch: guardedLlmFetch("chat"),
+    });
+    return {
+      ready: true,
+      configured: true,
+      connected: true,
+      model,
+      baseUrl: resolved.baseUrl,
+      provider: resolved.plugin.id,
+      error: null,
       checkedAt,
     };
   } catch (err) {
@@ -101,8 +83,9 @@ export async function probeAgent(): Promise<AgentStatus> {
       configured: true,
       connected: false,
       model,
-      baseUrl,
-      error: `Cannot reach ${baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
+      baseUrl: resolved.baseUrl,
+      provider: resolved.plugin.id,
+      error: `Cannot reach ${resolved.plugin.label} at ${resolved.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
       checkedAt,
     };
   }

@@ -20,6 +20,7 @@
   },
   "packageManager": "pnpm@9.15.4",
   "dependencies": {
+    "@ai-sdk/anthropic": "^2",
     "@ai-sdk/openai": "^2.0.23",
     "@ai-sdk/openai-compatible": "1.0.52",
     "@codemirror/lang-json": "^6.0.2",

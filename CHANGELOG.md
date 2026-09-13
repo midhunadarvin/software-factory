@@ -10,3 +10,4 @@ This project is pre-1.0; versions may include breaking changes.
 ### Added
 
 - Open-source project docs: contributing guide, developer and maintenance guides, security policy, code of conduct, GitHub issue/PR templates, and CI.
+- LLM provider plugins (`LlmProviderPlugin` + `registerLlmProvider`). A generic API key defaults to OpenCode Go, lists models from `GET /v1/models`, and routes chat / Responses / Anthropic Messages per model.

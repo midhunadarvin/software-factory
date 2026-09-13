@@ -187,7 +187,7 @@ function SessionInner() {
     textRef.current?.scrollTo({ top: textRef.current.scrollHeight });
   }, [live.text]);
 
-  const models = catalog.data?.models ?? (model ? [model] : []);
+  const models = catalog.data?.models ?? (model ? [{ id: model, style: "chat" as const }] : []);
   const debug = initial.data?.debug;
   const sessionError = live.error || job.data?.error || debug?.jobError || debug?.sessionError || undefined;
   const failed = live.status === "error" || job.data?.state === "failed" || Boolean(sessionError);
@@ -326,9 +326,9 @@ function SessionInner() {
               >
                 {models.length === 0 && <option value="">Loading models…</option>}
                 {models.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                    {m === catalog.data?.defaultModel ? " (default)" : ""}
+                  <option key={m.id} value={m.id}>
+                    {m.name ? `${m.name} (${m.id})` : m.id}
+                    {m.id === catalog.data?.defaultModel ? " (default)" : ""}
                   </option>
                 ))}
               </select>

@@ -1,5 +1,3 @@
-import { createOpenAI } from "@ai-sdk/openai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
   streamObject,
   streamText,
@@ -8,10 +6,14 @@ import {
   type ToolSet,
 } from "ai";
 import type { z } from "zod";
-import { llmApiKey, llmBaseUrl, llmConfigured, llmModel } from "../env";
+import { llmConfigured, llmModel } from "../env";
 import { getSqlite } from "../db/client";
 import { nowIso } from "../paths";
-import { mergeLlmHeaders } from "./opencode-session";
+import { readLlmResolveEnv } from "../llm/env";
+import { pickLlmPlugin, resolveLlmProvider } from "../llm/resolve";
+import { guardedLlmFetch } from "../llm/sdk";
+import type { LlmApiStyle, LlmModelInfo, PublicLlmProvider } from "../llm/types";
+import { normalizeLlmBaseUrl } from "../llm/url";
 import { sessionAbortSignal, sessionWasStopped } from "./session-store";
 import {
   formatLlmError,
@@ -36,7 +38,12 @@ const JSON_ONLY =
   "Respond with a single JSON object that matches the requested schema. Do not wrap it in markdown fences. Do not use YAML. No commentary.";
 
 const jobModels = new Map<string, string>();
-let modelListCache: { at: number; ids: string[] } | null = null;
+let modelListCache: {
+  at: number;
+  models: LlmModelInfo[];
+  defaultModel: string;
+  provider: PublicLlmProvider;
+} | null = null;
 
 export function clearModelListCache() {
   modelListCache = null;
@@ -79,93 +86,72 @@ function readStoredJobModel(jobId: string): string | null {
 }
 
 /**
- * OpenCode Go (and most third-party OpenAI-compat hosts) serve GLM/Kimi/DeepSeek
- * on /chat/completions. Grok, GPT, and xAI use the Responses API.
+ * API dialect for a model id, from the resolved (or hostname-matched) provider plugin.
  */
-export function llmApiStyle(modelId: string, baseUrl = llmBaseUrl()): "responses" | "chat" {
-  const id = modelId.trim().toLowerCase();
-  if (baseUrl.includes("api.x.ai")) return "responses";
-  if (/^(grok-|gpt-|o[1-9]|chatgpt-|muse-spark)/.test(id)) return "responses";
-  return "chat";
-}
-
-function requestUrl(input: RequestInfo | URL): string {
-  return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-}
-
-function guardedFetch(style: "chat" | "responses", sessionId?: string): typeof fetch {
-  return async (input, init) => {
-    const url = requestUrl(input);
-    if (style === "chat" && /\/responses(\?|$)/.test(url)) {
-      throw new Error(
-        `Refusing Responses API for a chat-completions model (${url}). Set OPENAI_COMPAT_BASE_URL to the /v1 root and restart the factory.`,
-      );
-    }
-    if (style === "responses" && /\/chat\/completions(\?|$)/.test(url)) {
-      throw new Error(`Refusing /chat/completions for a Responses-API model (${url}).`);
-    }
-    const existing =
-      init?.headers ?? (input instanceof Request ? input.headers : undefined);
-    return fetch(input, { ...init, headers: mergeLlmHeaders(url, existing, sessionId) });
-  };
+export function llmApiStyle(modelId: string, baseUrl?: string): LlmApiStyle {
+  const env = readLlmResolveEnv();
+  if (baseUrl) env.baseUrl = normalizeLlmBaseUrl(baseUrl);
+  const plugin = pickLlmPlugin({ ...env, apiKey: env.apiKey ?? "probe" });
+  return plugin?.apiStyle(modelId) ?? "chat";
 }
 
 export function getModel(jobId?: string): LanguageModel | null {
-  const key = llmApiKey();
-  if (!key) return null;
-  const baseURL = llmBaseUrl();
+  const resolved = resolveLlmProvider();
+  if (!resolved) return null;
   const id = jobId ? getJobModel(jobId) : llmModel();
-  const style = llmApiStyle(id, baseURL);
-  if (style === "responses") {
-    return createOpenAI({
-      apiKey: key,
-      baseURL,
-      name: "factory",
-      fetch: guardedFetch("responses", jobId),
-    }).responses(id);
-  }
-  // OpenCode Go GLM/Kimi/DeepSeek: official client is @ai-sdk/openai-compatible → /chat/completions
-  return createOpenAICompatible({
-    name: "factory",
-    apiKey: key,
-    baseURL,
-    supportsStructuredOutputs: true,
-    fetch: guardedFetch("chat", jobId),
-  })(id);
+  const style = resolved.plugin.apiStyle(id);
+  return resolved.plugin.createModel(id, {
+    apiKey: resolved.apiKey,
+    baseUrl: resolved.baseUrl,
+    fetch: guardedLlmFetch(style, jobId),
+  });
 }
 
 export async function listAvailableModels(): Promise<{
-  models: string[];
+  provider: PublicLlmProvider | null;
+  models: LlmModelInfo[];
   defaultModel: string;
 }> {
+  const resolved = resolveLlmProvider();
   const defaultModel = llmModel();
   if (modelListCache && Date.now() - modelListCache.at < 60_000) {
-    return { models: ensureDefault(modelListCache.ids, defaultModel), defaultModel };
+    return {
+      provider: modelListCache.provider,
+      models: ensureDefaultModels(modelListCache.models, defaultModel, resolved?.plugin.apiStyle ?? (() => "chat")),
+      defaultModel,
+    };
   }
-  const key = llmApiKey();
-  const base = llmBaseUrl().replace(/\/$/, "");
-  if (!key) return { models: [defaultModel], defaultModel };
+  if (!resolved) {
+    return { provider: null, models: [{ id: defaultModel, style: "chat" }], defaultModel };
+  }
+  const provider: PublicLlmProvider = {
+    id: resolved.plugin.id,
+    label: resolved.plugin.label,
+    description: resolved.plugin.description,
+    defaultBaseUrl: resolved.baseUrl,
+  };
   try {
-    const modelsUrl = `${base}/models`;
-    const res = await fetch(modelsUrl, {
-      headers: mergeLlmHeaders(modelsUrl, { Authorization: `Bearer ${key}` }),
-      signal: AbortSignal.timeout(12_000),
+    const models = await resolved.plugin.listModels({
+      apiKey: resolved.apiKey,
+      baseUrl: resolved.baseUrl,
+      fetch: guardedLlmFetch("chat"),
     });
-    if (!res.ok) return { models: [defaultModel], defaultModel };
-    const json = (await res.json()) as { data?: { id?: string }[] };
-    const ids = (json.data ?? [])
-      .map((m) => m.id)
-      .filter((id): id is string => Boolean(id))
-      .sort();
-    modelListCache = { at: Date.now(), ids };
-    return { models: ensureDefault(ids, defaultModel), defaultModel };
+    const withDefault = ensureDefaultModels(models, defaultModel, (id) => resolved.plugin.apiStyle(id));
+    modelListCache = { at: Date.now(), models: withDefault, defaultModel, provider };
+    return { provider, models: withDefault, defaultModel };
   } catch {
-    return { models: [defaultModel], defaultModel };
+    const fallback = [{ id: defaultModel, style: resolved.plugin.apiStyle(defaultModel) }];
+    return { provider, models: fallback, defaultModel };
   }
 }
 
-function ensureDefault(ids: string[], fallback: string) {
-  return ids.includes(fallback) ? ids : [fallback, ...ids];
+function ensureDefaultModels(
+  models: LlmModelInfo[],
+  fallback: string,
+  styleOf: (id: string) => LlmApiStyle,
+): LlmModelInfo[] {
+  if (models.some((m) => m.id === fallback)) return models;
+  return [{ id: fallback, style: styleOf(fallback) }, ...models];
 }
 
 export type LlmStreamPart = {

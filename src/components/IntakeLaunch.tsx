@@ -38,7 +38,7 @@ export function IntakeLaunch({
     if (currentModel) setLocal(currentModel);
     else if (!model && catalog.data?.defaultModel) setLocal(catalog.data.defaultModel);
   }, [currentModel, catalog.data?.defaultModel, model]);
-  const models = catalog.data?.models ?? (model ? [model] : []);
+  const models = catalog.data?.models ?? (model ? [{ id: model, style: "chat" as const }] : []);
   const selected = model || catalog.data?.defaultModel || "";
 
   return (
@@ -61,9 +61,9 @@ export function IntakeLaunch({
       >
         {models.length === 0 && <option value="">Loading models…</option>}
         {models.map((m) => (
-          <option key={m} value={m}>
-            {m}
-            {m === catalog.data?.defaultModel ? " (default)" : ""}
+          <option key={m.id} value={m.id}>
+            {m.name ? `${m.name} (${m.id})` : m.id}
+            {m.id === catalog.data?.defaultModel ? " (default)" : ""}
           </option>
         ))}
       </select>

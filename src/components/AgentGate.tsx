@@ -28,18 +28,18 @@ export function AgentGate({ children }: { children: ReactNode }) {
           <p className="text-destructive">{agent?.error ?? "Unknown agent error"}</p>
           <ol className="list-decimal space-y-1 pl-4 text-muted-foreground">
             <li>
-              Set <code className="rounded bg-muted px-1">XAI_API_KEY</code> or{" "}
-              <code className="rounded bg-muted px-1">OPENAI_API_KEY</code> in{" "}
+              Set <code className="rounded bg-muted px-1">FACTORY_LLM_API_KEY</code> (or{" "}
+              <code className="rounded bg-muted px-1">OPENAI_API_KEY</code> /{" "}
+              <code className="rounded bg-muted px-1">XAI_API_KEY</code>) in{" "}
               <code className="rounded bg-muted px-1">.env</code>
             </li>
             <li>
-              Optional: <code className="rounded bg-muted px-1">OPENAI_COMPAT_BASE_URL</code> must be the{" "}
-              <code className="rounded bg-muted px-1">/v1</code> root (default{" "}
-              {agent?.baseUrl ?? "https://api.x.ai/v1"}; OpenCode Go is{" "}
+              Default provider is OpenCode Go (
               <code className="rounded bg-muted px-1">https://opencode.ai/zen/go/v1</code>
-              — do not append <code className="rounded bg-muted px-1">/chat/completions</code>) and{" "}
-              <code className="rounded bg-muted px-1">OPENAI_COMPAT_MODEL</code> (default{" "}
-              {agent?.model ?? "grok-4.5"})
+              ). Optional: <code className="rounded bg-muted px-1">LLM_PROVIDER</code> (
+              {agent?.provider ?? "opencode_go"}
+              ) and <code className="rounded bg-muted px-1">OPENAI_COMPAT_MODEL</code> (default{" "}
+              {agent?.model ?? "glm-5.3-flash"})
             </li>
             <li>Restart the factory process so it reloads the environment</li>
           </ol>

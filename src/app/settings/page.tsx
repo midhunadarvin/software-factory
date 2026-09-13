@@ -95,7 +95,8 @@ function SettingsInner() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              LLM model comes from <code>OPENAI_COMPAT_MODEL</code> (default grok-4.5). Keys stay in env.
+              LLM keys stay in env (<code>FACTORY_LLM_API_KEY</code>). Default provider is OpenCode Go; the board lists models from{" "}
+              <code>GET /v1/models</code>. Optional <code>LLM_PROVIDER</code> selects a registered plugin.
             </p>
           </CardContent>
         </Card>

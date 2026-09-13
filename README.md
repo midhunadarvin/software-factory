@@ -14,6 +14,7 @@ This is a **single-tenant** app (one operator, local or VPS). It is not a multi-
 - Human-in-the-loop after planning artifacts and review; simple + low-risk tickets can fast-track
 - Implementation in an isolated linked worktree (`var/worktrees/`) — your current branch is not touched
 - Plugin intake: GitHub, Linear, Jira; add more without a new webhook route file
+- Plugin LLM backends: paste a key (OpenCode Go by default) and pick from `GET /v1/models`
 - Durable board: SQLite + LangGraph checkpoints survive `pnpm dev` / container restarts
 
 ## Requirements
@@ -28,21 +29,22 @@ git clone https://github.com/midhunadarvin/software-factory.git
 cd software-factory
 pnpm install
 cp .env.example .env
-# set FACTORY_SECRET (64 hex chars), FACTORY_APP_PASSWORD, and XAI_API_KEY
+# set FACTORY_SECRET (64 hex chars), FACTORY_APP_PASSWORD, and FACTORY_LLM_API_KEY
 pnpm dev
 ```
 
-The factory **will not attach repos or create jobs** until `XAI_API_KEY` (or `OPENAI_API_KEY`) is set and `GET {OPENAI_COMPAT_BASE_URL}/models` succeeds. Restart after changing env.
+The factory **will not attach repos or create jobs** until an LLM API key is set and `GET {provider}/v1/models` succeeds. Restart after changing env.
 
-`OPENAI_COMPAT_BASE_URL` is the API root ending in `/v1`, not a specific endpoint. For OpenCode Go:
+A generic key (`FACTORY_LLM_API_KEY` or `OPENAI_API_KEY`) defaults to **OpenCode Go** and lists every model that key can use. Optional:
 
 ```sh
-OPENAI_COMPAT_BASE_URL=https://opencode.ai/zen/go/v1
-OPENAI_COMPAT_MODEL=glm-5.3-flash
-OPENAI_API_KEY=sk-…
+FACTORY_LLM_API_KEY=sk-…
+# LLM_PROVIDER=opencode_go   # or xai | openai | custom
+# OPENAI_COMPAT_MODEL=glm-5.3-flash
+# XAI_API_KEY=xai-…          # selects the xAI plugin
 ```
 
-Do not append `/chat/completions` or `/responses` — the factory picks the endpoint from the model (GLM/Kimi/DeepSeek → chat completions; Grok/GPT → Responses).
+`OPENAI_COMPAT_BASE_URL` is only needed for a custom `/v1` host. Do not append `/chat/completions`, `/responses`, or `/messages` — the resolved provider plugin picks the endpoint from the model id.
 
 Open http://127.0.0.1:3000 — log in, then **Open a repository**.
 
