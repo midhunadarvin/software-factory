@@ -49,3 +49,5 @@ Against the diff:
 ## Historical spec
 
 `DESIGN.md` is the original product spec. Treat it as background. Current behavior is this tree + `AGENTS.md`.
+
+Human-facing docs (setup, webhooks, releases) live under `docs/`. Do not duplicate them here.

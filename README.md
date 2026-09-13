@@ -1,17 +1,30 @@
 # Software Factory
 
-TypeScript web app that turns a git repo into an agent factory with human approval. Run it on your laptop or self-host it with Docker. Jobs enter **Intake** from the UI, a GitHub poller, or **webhooks** (GitHub, Linear, Jira).
+[![CI](https://github.com/midhunadarvin/software-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/midhunadarvin/software-factory/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
+TypeScript web app that turns a git repo into an **agent factory** with human approval. Run it on your laptop or self-host it with Docker. Jobs enter **Intake** from the UI, a GitHub poller, or webhooks (GitHub, Linear, Jira).
+
+This is a **single-tenant** app (one operator, local or VPS). It is not a multi-tenant SaaS.
+
+## Features
+
+- Attach a local git folder or clone a GitHub repo — agents run against a tree on disk
+- Configurable lanes (default: Triage → Planning → Tech spec → Tasks → Implementation → PR)
+- Human-in-the-loop after planning artifacts and review; simple + low-risk tickets can fast-track
+- Implementation in an isolated linked worktree (`var/worktrees/`) — your current branch is not touched
+- Plugin intake: GitHub, Linear, Jira; add more without a new webhook route file
+- Durable board: SQLite + LangGraph checkpoints survive `pnpm dev` / container restarts
 
 ## Requirements
 
-- Node.js 22+
-- pnpm 9+
-- git
-- Or Docker 24+ / Compose v2
+- Node.js 22+ and pnpm 9+, plus git  
+  **or** Docker 24+ / Compose v2
 
-## Setup (local)
+## Quick start
 
 ```sh
+git clone https://github.com/midhunadarvin/software-factory.git
 cd software-factory
 pnpm install
 cp .env.example .env
@@ -44,163 +57,49 @@ Open http://127.0.0.1:3000 — log in, then **Open a repository**.
 7. Implementation runs in a linked worktree under `var/worktrees/` (your checkout is not touched).
 8. Approve review. Local-only repos finish with a branch; GitHub + PAT opens a pull request.
 
-Label GitHub issues `factory` to ingest them via the 30s poller (requires PAT and poll enabled). Webhooks can ingest every opened issue without that label.
-
 Without a working agent key the UI shows a blocking error and all create/attach mutations fail.
 
-## Self-host with Docker
+## Self-host and webhooks
 
-The image runs the same process as `pnpm start`: Next.js + FactoryRuntime in one container. Persist `var/` (SQLite, checkpoints, worktrees) and a repos directory.
-
-1. Copy env and set secrets. `FACTORY_ORIGIN` must be the URL webhook providers can reach.
-
-```sh
-cp .env.example .env
-# FACTORY_SECRET, FACTORY_APP_PASSWORD, XAI_API_KEY or OPENAI_API_KEY
-# FACTORY_ORIGIN=https://factory.example.com
-# GITHUB_WEBHOOK_SECRET / LINEAR_WEBHOOK_SECRET / JIRA_WEBHOOK_SECRET as needed
-```
-
-2. Build and start:
+- Docker, volumes, TLS, and restart behavior: **[docs/SELF-HOSTING.md](./docs/SELF-HOSTING.md)**
+- GitHub / Linear / Jira URLs and matching: **[docs/WEBHOOKS.md](./docs/WEBHOOKS.md)**
 
 ```sh
 docker compose up --build -d
 ```
 
-Or build the image yourself:
-
-```sh
-docker build -t software-factory .
-docker run --rm -p 3000:3000 --env-file .env \
-  -e FACTORY_BIND=0.0.0.0:3000 \
-  -v factory-data:/app/var \
-  -v /path/to/repos:/repos \
-  software-factory
-```
-
-3. Open `FACTORY_ORIGIN`, log in, attach or clone a repo. In Docker, clone dest defaults to `/repos/<owner>/<repo>` (`FACTORY_REPOS_DIR`). To use host checkouts:
-
-```sh
-FACTORY_HOST_REPOS=/absolute/path/to/repos docker compose up --build -d
-```
-
-Then attach `/repos/<name>` from the Open page.
-
-4. Put a reverse proxy (Caddy, nginx, Traefik) in front if you need TLS. Point `FACTORY_ORIGIN` at that public HTTPS URL. Webhook signatures do not replace TLS.
-
-Volumes:
-
-| Mount | Purpose |
-|---|---|
-| `/app/var` | `factory.sqlite`, checkpoints, job worktrees, session logs |
-| `/repos` | Git clones / attached work-trees |
-
-The container listens on `0.0.0.0:3000`. Health: `GET /api/health` (Compose/Docker check `db: true`).
-
-## State and restarts (dogfooding)
-
-Pipeline **config** and **job progress** live on disk under `{FACTORY_ROOT}/var/` (gitignored). A `pnpm dev` restart does not reset the board.
-
-| Path | What it keeps |
-|---|---|
-| `var/factory.sqlite` | Projects, pipeline JSON, intake settings, jobs, artifacts, events |
-| `var/checkpoints.sqlite` | LangGraph interrupts (HITL gates) |
-| `var/sessions/` | Agent transcripts |
-| `var/worktrees/` | Isolated implementation checkouts |
-
-On boot the runtime reopens those files, leaves **Intake** and **awaiting approval** cards parked, and continues only runnable lanes (triage / impl / …). Tickets do not jump back to Intake.
-
-When you attach this repo as a Factory project, keep using the same `FACTORY_ROOT` (default: the repo). Implementation runs in `var/worktrees/`, not in the checkout that is running the dev server. Do not delete `var/` if you want history. Coding agents should follow `AGENTS.md` (architecture and extension rules).
-
-## Webhooks → intake
-
-Intake integrations are **plugins**. GitHub, Linear, and Jira load by default; each one owns verify / parse / project matching and appears in Settings. The factory exposes unauthenticated POST endpoints at `/api/webhooks/<plugin-id>`. Auth is the provider signature (or a shared secret for Jira). Middleware does **not** require the app-password cookie.
-
-Set `FACTORY_ORIGIN` to the public base URL, then use:
-
-| Provider | URL | Secret env |
-|---|---|---|
-| GitHub | `{FACTORY_ORIGIN}/api/webhooks/github` | `GITHUB_WEBHOOK_SECRET` |
-| Linear | `{FACTORY_ORIGIN}/api/webhooks/linear` | `LINEAR_WEBHOOK_SECRET` |
-| Jira | `{FACTORY_ORIGIN}/api/webhooks/jira?secret=<JIRA_WEBHOOK_SECRET>` | `JIRA_WEBHOOK_SECRET` |
-
-Settings → **Webhook intake** shows these URLs and lets you enable each source, filter by label, and turn on **auto-triage**.
-
-Matching:
-
-- **GitHub** — `repository.owner/name` must match the project's GitHub remote (`repoOwner` / `repoName`).
-- **Linear** — enable Linear on the project; set **Team ID** if more than one project accepts Linear.
-- **Jira** — enable Jira and set the **project key** (e.g. `ENG`).
-
-Duplicates are ignored (`project` + `external_key`). Title/body refresh only while the card is still in Intake.
-
-### GitHub
-
-1. Generate a random secret and set `GITHUB_WEBHOOK_SECRET` (same value you paste into GitHub). Restart the factory.
-2. Repo (or org) **Settings → Webhooks → Add webhook**.
-   - Payload URL: `https://your-host/api/webhooks/github`
-   - Content type: `application/json`
-   - Secret: the same `GITHUB_WEBHOOK_SECRET`
-   - Events: **Issues** (opened / reopened / labeled are ingested)
-3. Attach that repo as a Factory project (clone or open a folder whose origin is the repo).
-4. In Factory Settings, leave **Accept GitHub issue webhooks** on. Leave **Required label** blank to ingest every opened issue, or set `factory` to require that label.
-5. Open a GitHub issue. A card appears in **Intake**. Enable **Auto-move new webhook tickets to triage** to skip the manual send.
-
-The 30s poller still works for issues labeled `factory` when a PAT is stored. Webhooks are the path for “create issue → intake immediately.”
-
-### Linear
-
-1. Linear **Settings → API → Webhooks**.
-2. URL: `https://your-host/api/webhooks/linear`
-3. Copy the signing secret into `LINEAR_WEBHOOK_SECRET`. Restart.
-4. Subscribe to **Issues**.
-5. In Factory Settings, enable Linear. Paste the team UUID if you run more than one project.
-6. Create a Linear issue. It lands in Intake (or Triage if auto-triage is on).
-
-### Jira
-
-Jira Cloud issue webhooks do not send an HMAC. The factory checks a shared secret on the query string (`?secret=`), `Authorization: Bearer …`, or `X-Webhook-Secret`.
-
-1. Set `JIRA_WEBHOOK_SECRET` to a long random string. Restart.
-2. Jira **Settings → System → Webhooks** (or the project automation “Send web request” action).
-   - URL: `https://your-host/api/webhooks/jira?secret=THE_SAME_SECRET`
-   - Events: **Issue created** (and optionally **Issue updated**)
-   - Body: the default Jira issue JSON (`jira:issue_created`)
-3. In Factory Settings, enable Jira and set the project key (`ENG`, `OPS`, …).
-4. Create a Jira issue in that project.
-
-If the secret is missing on the server, the endpoint returns **503** so you notice before configuring the provider.
-
-### Adding an integration plugin
-
-GitHub, Linear, and Jira are **plugins** loaded at boot (`src/lib/integrations/registry.ts`). A new tracker is the same shape: verify the webhook, parse an issue, match it to a Factory project.
-
-1. Add `src/lib/integrations/plugins/<name>.ts` that exports an `IntegrationPlugin` (`id`, `secretEnv`, `verify`, `parse`, `match`, settings fields).
-2. Register it:
-
-```ts
-import { registerIntegration } from "@/lib/integrations";
-import { asanaPlugin } from "@/lib/integrations/plugins/asana";
-
-registerIntegration(asanaPlugin);
-```
-
-Call that from `src/lib/integrations/registry.ts` (next to the built-ins) or from `src/server.ts` before `runtime.start()`.
-
-3. Restart. Settings → Webhook intake lists the new provider. The endpoint is `{FACTORY_ORIGIN}/api/webhooks/<id>`.
-
-`id` must be snake_case (`asana`, `clickup`). Stored project intake is `{ [id]: { enabled, …fields } }`, same as `github` / `linear` / `jira`.
-
-### Auto-triage
-
-Off by default. When enabled on the project, a newly ingested webhook (or poller) ticket is sent to the triage lane immediately — same as clicking **Send to triage**. If the LLM is not ready, the card stays in Intake and a warning is logged.
+Health: `GET /api/health` (`db: true`).
 
 ## Scripts
 
-- `pnpm dev` — `src/server.ts` (FactoryRuntime + Next.js)
-- `pnpm start` — production (build first with `pnpm build`)
-- `pnpm test` — unit tests
-- `pnpm seed:board` — six sample cards on the first project
-- `docker compose up --build` — self-hosted image
+| Command | What it does |
+|---|---|
+| `pnpm dev` | `src/server.ts` (FactoryRuntime + Next.js) |
+| `pnpm build` / `pnpm start` | Production |
+| `pnpm test` | Unit tests (Vitest) |
+| `pnpm typecheck` | `tsc --noEmit` |
+| `pnpm seed:board` | Six sample cards on the first project |
+| `pnpm db:migrate` | Apply SQLite DDL / ALTERs (also on boot) |
+| `docker compose up --build` | Self-hosted image |
 
-See [DESIGN.md](./DESIGN.md) for the original specification.
+## Documentation
+
+| Doc | When to read it |
+|---|---|
+| [docs/DEVELOPER.md](./docs/DEVELOPER.md) | Setup, layout, plugins, schema, tests |
+| [docs/MAINTENANCE.md](./docs/MAINTENANCE.md) | Releases, CI, `var/`, review checklist |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) | Issues and pull requests |
+| [SECURITY.md](./SECURITY.md) | Vulnerability reports |
+| [AGENTS.md](./AGENTS.md) | Architecture rules for humans and coding agents |
+| [DESIGN.md](./DESIGN.md) | Original product spec (historical) |
+| [CHANGELOG.md](./CHANGELOG.md) | User-visible changes |
+
+Current behavior is this tree + `AGENTS.md`. If `DESIGN.md` disagrees, **AGENTS.md wins**.
+
+## Contributing
+
+Bug reports and PRs are welcome. Please read [CONTRIBUTING.md](./CONTRIBUTING.md) and the [Code of Conduct](./CODE_OF_CONDUCT.md) first.
+
+## License
+
+[MIT](./LICENSE)

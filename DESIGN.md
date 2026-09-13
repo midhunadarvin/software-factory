@@ -1,5 +1,7 @@
 # Software Factory
 
+> **Historical spec.** Current architecture and extension rules are [AGENTS.md](./AGENTS.md). If this file disagrees with the tree, **AGENTS.md wins**. See [docs/README.md](./docs/README.md) for operator and maintainer guides.
+
 **Status:** Draft  
 **Date:** 2026-08-29  
 **Author:** Software Factory design  
