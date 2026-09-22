@@ -115,7 +115,7 @@ export function Kanban({
                     )}
                     {c.badge && (
                       <Badge variant={badgeVariant[c.badge as keyof typeof badgeVariant] ?? "default"}>
-                        {c.badge === "approval" ? "Review · approve or reject" : c.badge}
+                        {c.badge === "approval" ? "Chat, then approve" : c.badge}
                       </Badge>
                     )}
                     {c.model && c.column !== "intake" && (

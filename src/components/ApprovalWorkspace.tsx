@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, RotateCcw, ExternalLink, Trash2, Radio } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { MdxPreview } from "@/components/MdxPreview";
 import { AgentRunControls } from "@/components/AgentRunControls";
 import { IntakeLaunch } from "@/components/IntakeLaunch";
+import { LaneChat } from "@/components/LaneChat";
 import { frMdx, prMarkdown, reviewMarkdown, specMdx, tasksMarkdown } from "@/lib/artifacts/templates";
 
 type ArtifactRow = {
@@ -155,6 +156,10 @@ export function ApprovalWorkspace({
     }
   }, [current]);
 
+  useEffect(() => {
+    if (current?.body) setEdit(current.body);
+  }, [current?.id, current?.version, current?.body]);
+
   return (
     <div className="min-h-screen">
       <AppHeader
@@ -175,7 +180,7 @@ export function ApprovalWorkspace({
           </>
         }
       />
-      <main className="mx-auto grid max-w-6xl gap-6 px-4 py-8 lg:grid-cols-[1fr_320px]">
+      <main className="mx-auto grid max-w-6xl gap-6 px-4 py-8 lg:grid-cols-[1fr_minmax(320px,400px)]">
         <div className="min-w-0">
           <p className="mb-2 text-[11px] font-medium tracking-[0.16em] text-muted-foreground uppercase">
             Job · {currentLane}
@@ -365,6 +370,14 @@ export function ApprovalWorkspace({
               </CardContent>
             </Card>
           )}
+          {gate && session.data?.steerLane && (
+            <LaneChat
+              jobId={jobId}
+              laneId={session.data.steerLane}
+              laneLabel={currentLane}
+              running={Boolean(session.data.running) || session.data.status === "running"}
+            />
+          )}
           {gate && (
             <Card className="border-amber-200 shadow-sm">
               <CardHeader>
@@ -374,12 +387,12 @@ export function ApprovalWorkspace({
                 <CardTitle className="text-base">Human review</CardTitle>
                 <CardDescription>
                   {gate === "tech_spec"
-                    ? "Read the tech-spec MDX, then approve to continue or reject."
+                    ? "Chat with the tech spec agent if you want changes, then approve to continue or reject."
                     : gate === "requirements"
-                      ? "Read the planning MDX, then approve to start tech spec or reject."
+                      ? "Chat with the planning agent if you want changes, then approve to start tech spec or reject."
                       : gate === "pr"
-                        ? "Read the PR title and body. Approve to open it on GitHub (or as a draft), then the ticket moves to Done."
-                      : `Review the ${gate.replace("_", " ")} artifact, then approve or send it back.`}
+                        ? "Chat to revise the PR text if needed. Approve to open it on GitHub (or as a draft), then the ticket moves to Done."
+                      : `Chat with this lane’s agent to revise the document, then approve or send it back.`}
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">

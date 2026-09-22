@@ -19,6 +19,8 @@ cp .env.example .env
 pnpm dev
 ```
 
+Agents run on the open-source [Vercel AI SDK](https://sdk.vercel.ai) (`ai` + official `@ai-sdk/xai`, or `@ai-sdk/openai-compatible` for OpenCode). This repo does not ship its own LLM HTTP client.
+
 The factory **will not attach repos or create jobs** until `XAI_API_KEY` (or `OPENAI_API_KEY`) is set and `GET {OPENAI_COMPAT_BASE_URL}/models` succeeds. Restart after changing env.
 
 `OPENAI_COMPAT_BASE_URL` is the API root ending in `/v1`, not a specific endpoint. For OpenCode Go:
@@ -194,6 +196,15 @@ Call that from `src/lib/integrations/registry.ts` (next to the built-ins) or fro
 ### Auto-triage
 
 Off by default. When enabled on the project, a newly ingested webhook (or poller) ticket is sent to the triage lane immediately — same as clicking **Send to triage**. If the LLM is not ready, the card stays in Intake and a warning is logged.
+
+## Agent SDK
+
+Lane agents (prompts, ids, tool kits) live in [`packages/agent-sdk`](./packages/agent-sdk) (`@software-factory/agent-sdk`). The factory imports that package. Add or change an agent there and bump the workspace dependency — do not paste skills into `src/lib/runtime`.
+
+```sh
+pnpm add @software-factory/agent-sdk   # consumers
+# this repo: workspace:*
+```
 
 ## Scripts
 

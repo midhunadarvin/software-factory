@@ -68,7 +68,8 @@ export function PipelineEditor({
         <CardTitle>Lanes and actions</CardTitle>
         <CardDescription>
           Each lane is a board station. Actions run in order — for example Review can inspect the diff, apply
-          fixes, then wait for approval. {custom ? "This project has a custom pipeline." : "Using the built-in default."}{" "}
+          fixes, then wait for approval. A lane with human approval can be chatted with while the ticket is
+          parked. {custom ? "This project has a custom pipeline." : "Using the built-in default."}{" "}
           Pause running jobs before saving. Tickets already in flight should be restarted from a lane.
         </CardDescription>
       </CardHeader>

@@ -12,7 +12,8 @@ RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 WORKDIR /app
 
-COPY package.json pnpm-lock.yaml ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages ./packages
 RUN pnpm install --frozen-lockfile
 
 COPY tsconfig.json next.config.ts postcss.config.mjs ./

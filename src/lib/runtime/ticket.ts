@@ -48,6 +48,9 @@ export async function setTicketStatus(
 ) {
   const job = await loadTicket(jobId);
   if (!job) return { ok: false as const, error: "ticket not found" };
+  if (job.state.startsWith("awaiting_") && (status === "done" || status === "blocked" || status === "in_progress")) {
+    return { ok: false as const, error: "ticket is parked for approval" };
+  }
   const patch: Record<string, unknown> = { updatedAt: nowIso() };
   if (status === "blocked") patch.state = "paused";
   if (status === "done") {
@@ -76,6 +79,9 @@ export async function setTicketRisk(jobId: string, risk: "low" | "medium" | "hig
 export async function moveTicketColumn(jobId: string, column: BoardColumn) {
   const job = await loadTicket(jobId);
   if (!job) return { ok: false as const, error: "ticket not found" };
+  if (job.state.startsWith("awaiting_")) {
+    return { ok: false as const, error: "ticket is parked for approval" };
+  }
   const lane = LANES.find((l) => l.column === column);
   await getDb()
     .update(jobs)
@@ -92,6 +98,9 @@ export async function moveTicketColumn(jobId: string, column: BoardColumn) {
 export async function advanceTicket(jobId: string) {
   const job = await loadTicket(jobId);
   if (!job) return { ok: false as const, error: "ticket not found" };
+  if (job.state.startsWith("awaiting_")) {
+    return { ok: false as const, error: "ticket is parked for approval" };
+  }
   const nxt = nextLane(job.state);
   if (!nxt) return { ok: false as const, error: `no next lane from ${job.state}` };
   await getDb()
@@ -117,6 +126,25 @@ export async function advanceTicket(jobId: string) {
 export async function finishLaneAndStop(jobId: string) {
   const session = getSession(jobId);
   const lane = session?.lane;
+  const parked = await loadTicket(jobId);
+  if (parked?.state.startsWith("awaiting_")) {
+    if (session?.artifact != null) {
+      await getDb()
+        .update(jobs)
+        .set({ pendingArtifact: JSON.stringify(session.artifact), updatedAt: nowIso() })
+        .where(eq(jobs.id, jobId));
+    }
+    stopSession(jobId);
+    return {
+      ok: true as const,
+      from: lane ?? parked.lastActiveState,
+      to: parked.state,
+      column: parked.boardColumn,
+      nextAgent: null,
+      session: "stopped" as const,
+      waitingForHuman: true,
+    };
+  }
   const { loadPipelineForJob } = await import("./pipeline");
   const pipeline = await loadPipelineForJob(jobId);
   const laneCfg = lane ? (pipeline.laneById.get(lane) ?? laneFromPipeline(pipeline, lane)) : undefined;

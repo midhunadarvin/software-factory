@@ -1,0 +1,27 @@
+{
+  "name": "@software-factory/agent-sdk",
+  "version": "0.1.0",
+  "description": "Open-source agent catalog and run contract for Software Factory lanes",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "peerDependencies": {
+    "zod": "^3.25.0"
+  },
+  "keywords": [
+    "agents",
+    "software-factory",
+    "sdk"
+  ]
+}

@@ -19,14 +19,16 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@ai-sdk/openai": "^2.0.23",
     "@ai-sdk/openai-compatible": "1.0.52",
+    "@ai-sdk/xai": "2",
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/lang-markdown": "^6.3.3",
     "@dagrejs/dagre": "^1.1.5",
     "@langchain/core": "^0.3.72",
     "@langchain/langgraph": "^0.4.9",
     "@langchain/langgraph-checkpoint-sqlite": "^1.0.4",
+    "@software-factory/agent-sdk": "workspace:*",
+    "@strands-agents/sdk": "^1.17.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@tanstack/react-query": "^5.85.5",
     "@trpc/client": "^11.5.0",

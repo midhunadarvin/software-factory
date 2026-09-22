@@ -56,6 +56,7 @@ import {
 } from "./context";
 import { graphNodeForState, RESTART_STEPS, type RestartStepId } from "./ticket";
 import { stopSession, trimSessionsFromStep } from "./session-store";
+import { assertSteerJob, runSteer } from "./steer";
 
 type CompiledGraph = ReturnType<typeof compileFactoryGraph>;
 
@@ -634,6 +635,20 @@ export class FactoryRuntime {
     }
     stopSession(jobId, "stopped by operator");
     const job = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0];
+    if (job?.state.startsWith("awaiting_")) {
+      await getDb()
+        .update(jobs)
+        .set({ lockedAt: null, lockedBy: null, updatedAt: nowIso() })
+        .where(eq(jobs.id, jobId));
+      await logEvent({
+        projectId: job.projectId,
+        jobId,
+        event: "lane.agent.end",
+        payload: { ok: true, stopped: true, parked: true },
+      });
+      this.liveInvokes.delete(jobId);
+      return;
+    }
     const keepColumn = job?.boardColumn ?? "triage";
     const keepLane = job?.lastActiveState && job.lastActiveState !== "paused" ? job.lastActiveState : job?.state;
     await getDb()
@@ -655,6 +670,21 @@ export class FactoryRuntime {
       payload: { ok: true, stopped: true },
     });
     this.liveInvokes.delete(jobId);
+  }
+
+  async steerLane(jobId: string, message: string) {
+    return this.withJobMutex(jobId, async () => {
+      const job = assertSteerJob(
+        (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0],
+        this.isJobRunning(jobId),
+      );
+      this.liveInvokes.add(jobId);
+      try {
+        return await runSteer(job, message);
+      } finally {
+        this.liveInvokes.delete(jobId);
+      }
+    });
   }
 
   async restartFromStep(jobId: string, step: RestartStepId) {

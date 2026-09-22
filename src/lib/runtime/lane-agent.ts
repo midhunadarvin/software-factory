@@ -12,10 +12,10 @@ import {
   reviewReportInputSchema,
   taskGraphInputSchema,
 } from "./review-tools";
-import { skillFor, type LaneId } from "./skills";
+import type { LaneId } from "./skills";
+import { agentMaxSteps, resolveAgentSystem } from "@software-factory/agent-sdk";
 import { formatContextBlock, type LaneContext } from "./context";
 import { logEvent } from "./events";
-import { UNTRUSTED_INSTRUCTION } from "./untrusted";
 import {
   finishSession,
   getSession,
@@ -43,6 +43,8 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
   context: LaneContext | null;
   userPrompt: string;
   schema: S;
+  /** Revise a parked artifact. Tools must not advance the ticket. */
+  steer?: boolean;
 }): Promise<z.infer<S>> {
   if (!getModel(opts.jobId)) {
     throw new Error("Agent model is not configured");
@@ -58,31 +60,10 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
   try {
     const reasoning = await completeText({
       jobId: opts.jobId,
-      system: [
-        skillFor(opts.lane),
-        UNTRUSTED_INSTRUCTION,
-        opts.lane === "triage"
-          ? "Inspect the repo, then setTicketStatus, setRisk, finishLane."
-          : opts.lane === "requirements" || opts.lane === "tech_spec"
-            ? "Call inspectRepo once if needed. Then requestHumanReview with the spec JSON. That writes the spec file, shows Approve/Reject on the ticket, and ends this session. Do not keep exploring."
-            : opts.lane === "tasks"
-              ? "Inspect once if needed. Call submitArtifact with a tasks array. That saves the graph, moves the ticket, and ends this session. Do not keep exploring."
-              : opts.lane === "review"
-                ? "gitDiff once. Call submitArtifact with summary, verdict, findings, filesChanged. Then stop. Do not retry."
-              : opts.lane === "pull_request"
-                ? "gitStatus once. Confirm a feature branch. Call submitArtifact with title and body that describe only the product files. Do not include .factory/ plans or specs. Then stop."
-                : "Inspect the repo with inspectRepo/readFile/grep. Call submitArtifact with valid JSON, then finishLane.",
-      ].join("\n\n"),
+      system: resolveAgentSystem(opts.lane),
       prompt: `${formatContextBlock(opts.context)}\n\nReason through this lane task:\n${opts.userPrompt}`,
-      tools: await toolsForLane(opts.jobId, opts.lane, opts.schema),
-      maxSteps:
-        opts.lane === "requirements" ||
-        opts.lane === "tech_spec" ||
-        opts.lane === "tasks" ||
-        opts.lane === "review" ||
-        opts.lane === "pull_request"
-          ? 6
-          : 28,
+      tools: await toolsForLane(opts.jobId, opts.lane, opts.schema, opts.steer),
+      maxSteps: agentMaxSteps(opts.lane),
       onPart: (part) => {
         if (part.type === "thinking" || part.type === "text") {
           pushStream({
@@ -134,11 +115,7 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
         : await completeObject({
         jobId: opts.jobId,
         schema: opts.schema,
-        system: [
-          skillFor(opts.lane),
-          UNTRUSTED_INSTRUCTION,
-          "You are the only agent for this lane. Emit only the structured artifact.",
-        ].join("\n\n"),
+        system: `${resolveAgentSystem(opts.lane)}\n\nYou are the only agent for this lane. Emit only the structured artifact.`,
         prompt: `${formatContextBlock(opts.context)}\n\nYour reasoning:\n${reasoning.slice(0, 6000)}\n\nNow produce the artifact:\n${opts.userPrompt}`,
         onPart: (part) => {
           if (sessionWasStopped(opts.jobId)) return;
@@ -185,7 +162,7 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
   }
 }
 
-async function toolsForLane(jobId: string, lane: LaneId, schema: ZodTypeAny) {
+async function toolsForLane(jobId: string, lane: LaneId, schema: ZodTypeAny, steer = false) {
   const job = await loadTicket(jobId);
   const worktree = job?.worktreePath;
   const coding =
@@ -197,7 +174,7 @@ async function toolsForLane(jobId: string, lane: LaneId, schema: ZodTypeAny) {
   return {
     ...ticketTools(jobId),
     ...(coding ?? {}),
-    ...(lane === "requirements" || lane === "tech_spec" ? requestHumanReviewTool(jobId, lane) : {}),
+    ...(lane === "requirements" || lane === "tech_spec" ? requestHumanReviewTool(jobId, lane, steer) : {}),
     submitArtifact: tool({
       description:
         lane === "requirements" || lane === "tech_spec"
@@ -222,7 +199,7 @@ async function toolsForLane(jobId: string, lane: LaneId, schema: ZodTypeAny) {
       execute: async (input) => {
         const artifact = pickReviewArtifact(input);
         if (lane === "requirements" || lane === "tech_spec") {
-          return requestHumanReview({ jobId, lane, artifact });
+          return requestHumanReview({ jobId, lane, artifact, steer });
         }
         const coerced = coerceLaneArtifact(lane, artifact);
         const parsed = coerced != null ? schema.safeParse(coerced) : schema.safeParse(artifact);
@@ -231,6 +208,10 @@ async function toolsForLane(jobId: string, lane: LaneId, schema: ZodTypeAny) {
         }
         setSessionArtifact(jobId, parsed.data);
         if (lane === "tasks") {
+          if (steer) {
+            stopSession(jobId);
+            return { submitted: true, waitingForHuman: true, session: "stopped" as const };
+          }
           const done = await finishLaneAndStop(jobId);
           return { submitted: true, ...done };
         }

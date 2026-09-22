@@ -18,6 +18,7 @@ export async function requestHumanReview(opts: {
   jobId: string;
   lane: LaneId;
   artifact: unknown;
+  steer?: boolean;
 }): Promise<
   | { ok: true; waitingForHuman: true; column: string; document: string }
   | { ok: false; error: string }
@@ -31,7 +32,7 @@ export async function requestHumanReview(opts: {
     await writeArtifact({ jobId: opts.jobId, kind: "tech_spec", source: "agent", body: spec });
     writeDoc(job, "tech-spec.mdx", specMdx(spec));
     writeDoc(job, "tech-spec.md", specMarkdown(spec));
-    await park(opts.jobId, "awaiting_tech_spec_approval", "tech_spec", spec);
+    await park(opts.jobId, "awaiting_tech_spec_approval", "tech_spec", spec, opts.steer);
     await logEvent({
       projectId: job.projectId,
       jobId: opts.jobId,
@@ -48,7 +49,7 @@ export async function requestHumanReview(opts: {
   writeDoc(job, "requirements.mdx", frMdx(fr));
   writeDoc(job, "requirements.md", frMarkdown(fr));
   writeDoc(job, "plan-spec.mdx", frMdx(fr));
-  await park(opts.jobId, "awaiting_requirements_approval", "planning", fr);
+  await park(opts.jobId, "awaiting_requirements_approval", "planning", fr, opts.steer);
   await logEvent({
     projectId: job.projectId,
     jobId: opts.jobId,
@@ -122,7 +123,7 @@ export function pickReviewArtifact(input: unknown): unknown {
   return o;
 }
 
-export function requestHumanReviewTool(jobId: string, lane: LaneId) {
+export function requestHumanReviewTool(jobId: string, lane: LaneId, steer = false) {
   return {
     requestHumanReview: tool({
       description:
@@ -133,6 +134,7 @@ export function requestHumanReviewTool(jobId: string, lane: LaneId) {
           jobId,
           lane,
           artifact: pickReviewArtifact(input),
+          steer,
         }),
     }),
   };
@@ -143,13 +145,16 @@ async function park(
   state: "awaiting_requirements_approval" | "awaiting_tech_spec_approval",
   column: "planning" | "tech_spec",
   artifact: FunctionalRequirements | TechnicalSpec,
+  steer = false,
 ) {
+  const job = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)).limit(1))[0];
+  const parked = steer || Boolean(job?.state.startsWith("awaiting_"));
   await getDb()
     .update(jobs)
     .set({
-      state,
-      boardColumn: column,
-      lastActiveState: column === "planning" ? "requirements" : "tech_spec",
+      state: parked && job ? job.state : state,
+      boardColumn: parked && job ? job.boardColumn : column,
+      lastActiveState: parked && job ? job.lastActiveState : column === "planning" ? "requirements" : "tech_spec",
       pendingArtifact: JSON.stringify(artifact),
       error: null,
       lockedAt: null,

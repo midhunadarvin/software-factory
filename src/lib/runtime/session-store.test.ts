@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { sessionFilePath } from "../paths";
 import {
+  appendChatTurn,
   appendSession,
+  chatTurns,
   finishSession,
   getSession,
   getSessionBundle,
@@ -68,6 +70,26 @@ describe("session-store", () => {
     expect(bundle.history.map((h) => h.lane)).toEqual(["triage"]);
     expect(bundle.history[0]?.thinking).toContain("triage notes");
     expect(bundle.current).toBeNull();
+  });
+
+  it("persists chat turns next to the session transcript", () => {
+    startSession(JOB, "proj", "requirements");
+    appendChatTurn(JOB, { role: "user", lane: "requirements", text: "add FR-2", at: "2026-09-21T00:00:00.000Z" });
+    appendChatTurn(JOB, { role: "agent", lane: "requirements", text: "Updated the document.", at: "2026-09-21T00:00:01.000Z" });
+    const g = globalThis as typeof globalThis & { __factorySessions?: unknown };
+    g.__factorySessions = undefined;
+    expect(chatTurns(JOB)).toEqual([
+      { role: "user", lane: "requirements", text: "add FR-2", at: "2026-09-21T00:00:00.000Z" },
+      { role: "agent", lane: "requirements", text: "Updated the document.", at: "2026-09-21T00:00:01.000Z" },
+    ]);
+  });
+
+  it("trims chat turns from a restarted step onward", () => {
+    appendChatTurn(JOB, { role: "user", lane: "triage", text: "t", at: "t0" });
+    appendChatTurn(JOB, { role: "user", lane: "requirements", text: "r", at: "t1" });
+    appendChatTurn(JOB, { role: "user", lane: "tech_spec", text: "s", at: "t2" });
+    trimSessionsFromStep(JOB, "planning");
+    expect(chatTurns(JOB).map((t) => t.lane)).toEqual(["triage"]);
   });
 
   it("marks a stopped session so the agent loop can exit", () => {

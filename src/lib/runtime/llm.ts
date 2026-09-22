@@ -1,18 +1,18 @@
-import { createOpenAI } from "@ai-sdk/openai";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import {
-  streamObject,
-  streamText,
-  stepCountIs,
-  type LanguageModel,
-  type ToolSet,
-} from "ai";
+  Agent,
+  BeforeToolCallEvent,
+  ModelStreamUpdateEvent,
+  type AgentStreamEvent,
+} from "@strands-agents/sdk";
+import { OpenAIModel } from "@strands-agents/sdk/models/openai";
 import type { z } from "zod";
 import { llmApiKey, llmBaseUrl, llmConfigured, llmModel } from "../env";
 import { getSqlite } from "../db/client";
 import { nowIso } from "../paths";
+import type { FactoryToolSet } from "./factory-tool";
 import { mergeLlmHeaders } from "./opencode-session";
 import { sessionAbortSignal, sessionWasStopped } from "./session-store";
+import { toStrandsTools } from "./strands-tools";
 import {
   formatLlmError,
   isRetryableLlmError,
@@ -78,13 +78,19 @@ function readStoredJobModel(jobId: string): string | null {
   }
 }
 
-/**
- * OpenCode Go (and most third-party OpenAI-compat hosts) serve GLM/Kimi/DeepSeek
- * on /chat/completions. Grok, GPT, and xAI use the Responses API.
- */
+function isXaiHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname;
+    return host === "api.x.ai" || host.endsWith(".x.ai");
+  } catch {
+    return /(?:^|\.)x\.ai$/i.test(baseUrl);
+  }
+}
+
+/** Strands OpenAIModel API: Grok / api.x.ai → Responses; OpenCode GLM/Kimi/DeepSeek → Chat Completions. */
 export function llmApiStyle(modelId: string, baseUrl = llmBaseUrl()): "responses" | "chat" {
   const id = modelId.trim().toLowerCase();
-  if (baseUrl.includes("api.x.ai")) return "responses";
+  if (isXaiHost(baseUrl)) return "responses";
   if (/^(grok-|gpt-|o[1-9]|chatgpt-|muse-spark)/.test(id)) return "responses";
   return "chat";
 }
@@ -93,45 +99,30 @@ function requestUrl(input: RequestInfo | URL): string {
   return typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 }
 
-function guardedFetch(style: "chat" | "responses", sessionId?: string): typeof fetch {
+function sdkFetch(sessionId?: string): typeof fetch {
   return async (input, init) => {
     const url = requestUrl(input);
-    if (style === "chat" && /\/responses(\?|$)/.test(url)) {
-      throw new Error(
-        `Refusing Responses API for a chat-completions model (${url}). Set OPENAI_COMPAT_BASE_URL to the /v1 root and restart the factory.`,
-      );
-    }
-    if (style === "responses" && /\/chat\/completions(\?|$)/.test(url)) {
-      throw new Error(`Refusing /chat/completions for a Responses-API model (${url}).`);
-    }
-    const existing =
-      init?.headers ?? (input instanceof Request ? input.headers : undefined);
+    const existing = init?.headers ?? (input instanceof Request ? input.headers : undefined);
     return fetch(input, { ...init, headers: mergeLlmHeaders(url, existing, sessionId) });
   };
 }
 
-export function getModel(jobId?: string): LanguageModel | null {
+export function getModel(jobId?: string): OpenAIModel | null {
   const key = llmApiKey();
   if (!key) return null;
   const baseURL = llmBaseUrl();
   const id = jobId ? getJobModel(jobId) : llmModel();
-  const style = llmApiStyle(id, baseURL);
-  if (style === "responses") {
-    return createOpenAI({
-      apiKey: key,
-      baseURL,
-      name: "factory",
-      fetch: guardedFetch("responses", jobId),
-    }).responses(id);
-  }
-  // OpenCode Go GLM/Kimi/DeepSeek: official client is @ai-sdk/openai-compatible → /chat/completions
-  return createOpenAICompatible({
-    name: "factory",
+  const api = llmApiStyle(id, baseURL);
+  return new OpenAIModel({
+    api,
+    modelId: id,
     apiKey: key,
-    baseURL,
-    supportsStructuredOutputs: true,
-    fetch: guardedFetch("chat", jobId),
-  })(id);
+    clientConfig: {
+      baseURL,
+      fetch: sdkFetch(jobId),
+    },
+    ...(api === "responses" ? { params: { reasoning_effort: "medium" } } : {}),
+  });
 }
 
 export async function listAvailableModels(): Promise<{
@@ -174,78 +165,49 @@ export type LlmStreamPart = {
   tool?: string;
 };
 
+export type LlmStreamChunk = {
+  type: string;
+  textDelta?: string;
+  text?: string;
+  delta?: string;
+  toolName?: string;
+  error?: unknown;
+};
+
+export type LlmTextStream = {
+  fullStream: AsyncIterable<LlmStreamChunk>;
+  text: Promise<string>;
+};
+
+export type LlmObjectStream = {
+  fullStream: AsyncIterable<LlmStreamChunk>;
+  object: Promise<unknown>;
+};
+
 export type LlmHooks = {
-  streamObject?: typeof streamObject;
-  streamText?: typeof streamText;
+  streamObject?: (opts: Record<string, unknown>) => LlmObjectStream;
+  streamText?: (opts: Record<string, unknown>) => LlmTextStream;
   sleep?: (ms: number) => Promise<void>;
 };
 
-export async function completeText<TOOLS extends ToolSet>(opts: {
+export async function completeText(opts: {
   jobId?: string;
   system: string;
   prompt: string;
-  tools?: TOOLS;
+  tools?: FactoryToolSet;
   maxSteps?: number;
   maxAttempts?: number;
   onPart?: (part: LlmStreamPart) => void;
   hooks?: LlmHooks;
 }): Promise<string> {
-  const model = requireModel(opts.jobId);
-  const run = opts.hooks?.streamText ?? streamText;
+  requireModel(opts.jobId);
+  if (opts.hooks?.streamText) {
+    return completeTextViaHook(opts, opts.hooks.streamText);
+  }
   return withLlmAttempts({
     maxAttempts: opts.maxAttempts,
     sleep: opts.hooks?.sleep,
-    operation: async () => {
-      const streamed = run({
-        model,
-        system: opts.system,
-        prompt: opts.prompt,
-        tools: opts.tools,
-        stopWhen: opts.maxSteps ? stepCountIs(opts.maxSteps) : undefined,
-        maxRetries: 0,
-        abortSignal: opts.jobId ? sessionAbortSignal(opts.jobId) : undefined,
-        providerOptions: reasoningProviderOptions(opts.jobId),
-      });
-      let raw = "";
-      let thinking = "";
-      try {
-        for await (const part of streamed.fullStream) {
-          if (opts.jobId && sessionWasStopped(opts.jobId)) {
-            return raw.trim();
-          }
-          if (isReasoningPart(part.type)) {
-            const delta = deltaOf(part);
-            if (delta) {
-              thinking += delta;
-              opts.onPart?.({ type: "thinking", delta });
-            }
-          } else if (part.type === "text-delta") {
-            const delta = deltaOf(part);
-            if (delta) {
-              raw += delta;
-              opts.onPart?.({ type: "text", delta });
-            }
-          } else if (part.type === "tool-call") {
-            opts.onPart?.({ type: "tool", delta: "", tool: part.toolName });
-          } else if (part.type === "error") {
-            throw part.error instanceof Error ? part.error : new Error(String(part.error));
-          }
-        }
-        const leftover = await Promise.resolve(streamed.reasoningText).then(
-          (v) => v,
-          () => undefined,
-        );
-        if (leftover && leftover.length > thinking.length) {
-          opts.onPart?.({ type: "thinking", delta: leftover.slice(thinking.length) });
-        }
-        return (await streamed.text).trim() || raw.trim();
-      } catch (err) {
-        void streamed.text.catch(() => {});
-        if (opts.jobId && sessionWasStopped(opts.jobId)) return raw.trim();
-        if (err instanceof Error && err.name === "AbortError") return raw.trim();
-        throw err;
-      }
-    },
+    operation: () => runStrands(opts),
   });
 }
 
@@ -258,9 +220,7 @@ export async function completeObject<S extends z.ZodTypeAny>(opts: {
   onPart?: (part: LlmStreamPart) => void;
   hooks?: LlmHooks;
 }): Promise<z.infer<S>> {
-  const model = requireModel(opts.jobId);
-  const objectFn = opts.hooks?.streamObject ?? streamObject;
-  const textFn = opts.hooks?.streamText ?? streamText;
+  requireModel(opts.jobId);
   return withLlmAttempts({
     maxAttempts: opts.maxAttempts,
     sleep: opts.hooks?.sleep,
@@ -271,48 +231,156 @@ export async function completeObject<S extends z.ZodTypeAny>(opts: {
           ? opts.prompt
           : `${opts.prompt}\n\nYour previous reply was not valid JSON. ${JSON_ONLY}`;
       const system = `${opts.system}\n\n${JSON_ONLY}`;
-      if (attempt === 1) {
+      if (opts.hooks?.streamObject && attempt === 1) {
         return await generateObjectOnce({
           jobId: opts.jobId,
-          model,
           system,
           prompt,
           schema: opts.schema,
-          streamObject: objectFn,
+          streamObject: opts.hooks.streamObject,
           onPart: opts.onPart,
         });
       }
-      return await generateObjectViaText({
-        model,
+      if (opts.hooks?.streamText) {
+        return await generateObjectViaText({
+          system,
+          prompt,
+          schema: opts.schema,
+          streamText: opts.hooks.streamText,
+          onPart: opts.onPart,
+        });
+      }
+      const text = await runStrands({
+        jobId: opts.jobId,
         system,
         prompt,
-        schema: opts.schema,
-        streamText: textFn,
         onPart: opts.onPart,
       });
+      const recovered = parseStructured(text, opts.schema);
+      if (recovered.ok) return recovered.value;
+      throw Object.assign(
+        new Error(`No object generated: could not parse the response. ${recovered.error.message}`),
+        { name: "AI_NoObjectGeneratedError", text, cause: recovered.error },
+      );
     },
   });
 }
 
+async function completeTextViaHook(
+  opts: {
+    jobId?: string;
+    system: string;
+    prompt: string;
+    tools?: FactoryToolSet;
+    maxSteps?: number;
+    maxAttempts?: number;
+    onPart?: (part: LlmStreamPart) => void;
+    hooks?: LlmHooks;
+  },
+  streamText: NonNullable<LlmHooks["streamText"]>,
+): Promise<string> {
+  return withLlmAttempts({
+    maxAttempts: opts.maxAttempts,
+    sleep: opts.hooks?.sleep,
+    operation: async () => {
+      const streamed = streamText({
+        system: opts.system,
+        prompt: opts.prompt,
+        tools: opts.tools,
+        maxSteps: opts.maxSteps,
+      });
+      return consumeTextStream(streamed, opts);
+    },
+  });
+}
+
+async function runStrands(opts: {
+  jobId?: string;
+  system: string;
+  prompt: string;
+  tools?: FactoryToolSet;
+  maxSteps?: number;
+  onPart?: (part: LlmStreamPart) => void;
+}): Promise<string> {
+  const model = requireModel(opts.jobId);
+  const agent = new Agent({
+    model,
+    tools: toStrandsTools(opts.tools),
+    systemPrompt: opts.system,
+    printer: false,
+    retryStrategy: null,
+  });
+  let raw = "";
+  const stream = agent.stream(opts.prompt, {
+    limits: opts.maxSteps ? { turns: opts.maxSteps } : undefined,
+    cancelSignal: opts.jobId ? sessionAbortSignal(opts.jobId) : undefined,
+  });
+  try {
+    let next = await stream.next();
+    while (!next.done) {
+      if (opts.jobId && sessionWasStopped(opts.jobId)) {
+        agent.cancel();
+        return raw.trim();
+      }
+      emitStreamPart(next.value, opts.onPart, (delta) => {
+        raw += delta;
+      });
+      next = await stream.next();
+    }
+    return textFromMessage(next.value.lastMessage) || raw.trim();
+  } catch (err) {
+    if (opts.jobId && sessionWasStopped(opts.jobId)) return raw.trim();
+    if (err instanceof Error && (err.name === "AbortError" || err.name === "CancelledError")) {
+      return raw.trim();
+    }
+    throw err;
+  }
+}
+
+function emitStreamPart(
+  event: AgentStreamEvent,
+  onPart: ((part: LlmStreamPart) => void) | undefined,
+  appendText: (delta: string) => void,
+) {
+  if (event instanceof ModelStreamUpdateEvent) {
+    const inner = event.event;
+    if (inner.type === "modelContentBlockDeltaEvent") {
+      const delta = inner.delta;
+      if (delta.type === "textDelta" && delta.text) {
+        appendText(delta.text);
+        onPart?.({ type: "text", delta: delta.text });
+      } else if (delta.type === "reasoningContentDelta" && delta.text) {
+        onPart?.({ type: "thinking", delta: delta.text });
+      }
+    }
+    return;
+  }
+  if (event instanceof BeforeToolCallEvent && event.toolUse?.name) {
+    onPart?.({ type: "tool", delta: "", tool: event.toolUse.name });
+  }
+}
+
+function textFromMessage(message: { content?: Array<{ type?: string; text?: string }> } | undefined): string {
+  if (!message?.content) return "";
+  return message.content
+    .map((block) => (block.type === "textBlock" && typeof block.text === "string" ? block.text : ""))
+    .join("")
+    .trim();
+}
+
 async function generateObjectOnce<S extends z.ZodTypeAny>(opts: {
   jobId?: string;
-  model: LanguageModel;
   system: string;
   prompt: string;
   schema: S;
-  streamObject: typeof streamObject;
+  streamObject: NonNullable<LlmHooks["streamObject"]>;
   onPart?: (part: LlmStreamPart) => void;
 }): Promise<z.infer<S>> {
   const result = opts.streamObject({
-    model: opts.model,
     schema: opts.schema,
     system: opts.system,
     prompt: opts.prompt,
-    maxRetries: 0,
-    abortSignal:
-      opts.jobId && !sessionWasStopped(opts.jobId) ? sessionAbortSignal(opts.jobId) : undefined,
     experimental_repairText: repairStructuredText,
-    providerOptions: reasoningProviderOptions(opts.jobId),
   });
   let raw = "";
   try {
@@ -344,36 +412,17 @@ async function generateObjectOnce<S extends z.ZodTypeAny>(opts: {
 }
 
 async function generateObjectViaText<S extends z.ZodTypeAny>(opts: {
-  model: LanguageModel;
   system: string;
   prompt: string;
   schema: S;
-  streamText: typeof streamText;
+  streamText: NonNullable<LlmHooks["streamText"]>;
   onPart?: (part: LlmStreamPart) => void;
 }): Promise<z.infer<S>> {
   const streamed = opts.streamText({
-    model: opts.model,
     system: opts.system,
     prompt: opts.prompt,
-    maxRetries: 0,
-    providerOptions: reasoningProviderOptions(),
   });
-  let raw = "";
-  for await (const part of streamed.fullStream) {
-    if (isReasoningPart(part.type)) {
-      const delta = deltaOf(part);
-      if (delta) opts.onPart?.({ type: "thinking", delta });
-    } else if (part.type === "text-delta") {
-      const delta = deltaOf(part);
-      if (delta) {
-        raw += delta;
-        opts.onPart?.({ type: "text", delta });
-      }
-    } else if (part.type === "error") {
-      throw part.error instanceof Error ? part.error : new Error(String(part.error));
-    }
-  }
-  const text = (await streamed.text.catch(() => "")).trim() || raw.trim();
+  const text = await consumeTextStream(streamed, opts);
   const recovered = parseStructured(text, opts.schema);
   if (recovered.ok) return recovered.value;
   throw Object.assign(new Error(`No object generated: could not parse the response. ${recovered.error.message}`), {
@@ -383,17 +432,44 @@ async function generateObjectViaText<S extends z.ZodTypeAny>(opts: {
   });
 }
 
-function requireModel(jobId?: string): LanguageModel {
+async function consumeTextStream(
+  streamed: LlmTextStream,
+  opts: { jobId?: string; onPart?: (part: LlmStreamPart) => void },
+): Promise<string> {
+  let raw = "";
+  try {
+    for await (const part of streamed.fullStream) {
+      if (opts.jobId && sessionWasStopped(opts.jobId)) {
+        return raw.trim();
+      }
+      if (isReasoningPart(part.type)) {
+        const delta = deltaOf(part);
+        if (delta) opts.onPart?.({ type: "thinking", delta });
+      } else if (part.type === "text-delta") {
+        const delta = deltaOf(part);
+        if (delta) {
+          raw += delta;
+          opts.onPart?.({ type: "text", delta });
+        }
+      } else if (part.type === "tool-call") {
+        opts.onPart?.({ type: "tool", delta: "", tool: part.toolName });
+      } else if (part.type === "error") {
+        throw part.error instanceof Error ? part.error : new Error(String(part.error));
+      }
+    }
+    return (await streamed.text).trim() || raw.trim();
+  } catch (err) {
+    void streamed.text.catch(() => {});
+    if (opts.jobId && sessionWasStopped(opts.jobId)) return raw.trim();
+    if (err instanceof Error && err.name === "AbortError") return raw.trim();
+    throw err;
+  }
+}
+
+function requireModel(jobId?: string): OpenAIModel {
   const model = getModel(jobId);
   if (!model) throw new Error("Agent model is not configured");
   return model;
-}
-
-function reasoningProviderOptions(jobId?: string) {
-  const id = jobId ? getJobModel(jobId) : llmModel();
-  if (llmApiStyle(id) !== "responses") return undefined;
-  const openai = { reasoningEffort: "medium", reasoningSummary: "detailed" };
-  return { openai, factory: openai };
 }
 
 function isReasoningPart(type: string): boolean {

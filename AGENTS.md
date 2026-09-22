@@ -7,7 +7,7 @@ This file is authoritative for agents working in this repo. If `DESIGN.md` disag
 One Node process: `src/server.ts` starts FactoryRuntime + Next.js.
 
 - Next 15, React 19, tRPC, Drizzle + better-sqlite3 (WAL), LangGraph, Zod, Vitest, Tailwind
-- LLM: OpenAI-compatible (`XAI_API_KEY` / `OPENAI_API_KEY`)
+- LLM: Vercel AI SDK — `@ai-sdk/xai` for Grok / api.x.ai, `@ai-sdk/openai-compatible` for other hosts. Do not add another LLM client.
 - Persistence: `{FACTORY_ROOT}/var/` only (`factory.sqlite`, `checkpoints.sqlite`, `sessions/`, `worktrees/`)
 - Do not add a second database, queue, or UI framework
 
@@ -19,6 +19,7 @@ One Node process: `src/server.ts` starts FactoryRuntime + Next.js.
 | UI | `src/components/` |
 | tRPC | `src/lib/trpc/routers/` |
 | Jobs, graph, lanes | `src/lib/runtime/` |
+| Lane agents (prompts, catalog) | `packages/agent-sdk/` — do not copy skills into the app |
 | Pipeline config | `src/lib/runtime/pipeline/` |
 | New issue tracker (Slack, Asana, …) | `src/lib/integrations/plugins/` + `registerIntegration` |
 | Schema | `src/lib/db/schema.ts` **and** `src/lib/db/migrate.ts` (`ALTER TABLE … ADD`) |
@@ -27,10 +28,11 @@ One Node process: `src/server.ts` starts FactoryRuntime + Next.js.
 ## Extension rules (do not diverge)
 
 1. **New intake source** = an `IntegrationPlugin` (`verify`, `parse`, `match`, settings fields). Register it in `src/lib/integrations/registry.ts`. Webhooks already live at `POST /api/webhooks/[id]`. Do **not** add `/api/webhooks/<name>/route.ts`.
-2. **New factory lane or HITL step** = a pipeline action (`produce` / `implement` / `fix` / `human_approval` / `publish`) in `src/lib/runtime/pipeline/`. Do not hardcode a new LangGraph node name unless the default pipeline needs a stable checkpoint name.
-3. **Job and pipeline progress** stay in `var/`. Never invent another store. Never commit `var/`.
-4. **Client components** must not import Node-only modules (`integrations/registry.ts`, `db/client`, `better-sqlite3`). Use `src/lib/intake/settings.ts` and data from tRPC.
-5. **Reuse** the neighboring module. Do not add a package or top-level folder if an existing one already does the job.
+2. **New factory lane or HITL step** = a pipeline action in `src/lib/runtime/pipeline/` plus an agent in `@software-factory/agent-sdk` (`registerAgent` / `packages/agent-sdk/src/catalog.ts`). Do not paste a new skill string into `src/lib/runtime`.
+3. **New coding agent** = `registerAgent` in the SDK. The factory looks agents up by id.
+4. **Job and pipeline progress** stay in `var/`. Never invent another store. Never commit `var/`.
+5. **Client components** must not import Node-only modules (`integrations/registry.ts`, `db/client`, `better-sqlite3`). Use `src/lib/intake/settings.ts` and data from tRPC.
+6. **Reuse** the neighboring module. Do not add a package or top-level folder if an existing one already does the job.
 
 ## Change style
 

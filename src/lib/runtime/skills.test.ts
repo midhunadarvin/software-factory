@@ -19,6 +19,13 @@ describe("skillFor", () => {
     expect(skillFor("requirements")).toMatch(/requestHumanReview/);
     expect(skillFor("tech_spec")).toMatch(/requestHumanReview/);
     expect(skillFor("tasks")).toMatch(/submitArtifact/);
+    expect(skillFor("requirements")).toMatch(/later operator message/);
+    expect(skillFor("tech_spec")).toMatch(/later operator message/);
+    expect(skillFor("tasks")).toMatch(/later operator message/);
+    expect(skillFor("review")).toMatch(/later operator message/);
+    expect(skillFor("pull_request")).toMatch(/later operator message/);
+    expect(skillFor("requirements")).toMatch(/Do not finishLane/);
+    expect(skillFor("tasks")).toMatch(/Do not move the ticket/);
     expect(skillFor("implementation")).toMatch(/gitCommit/);
     expect(skillFor("review")).toMatch(/verdict/);
     expect(skillFor("fix")).toMatch(/review findings/);

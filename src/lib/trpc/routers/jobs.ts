@@ -20,6 +20,7 @@ import { projects } from "../../db/schema";
 import { randomUUID } from "node:crypto";
 import { requireAgent } from "../require-agent";
 import { getSession, getSessionBundle } from "../../runtime/session-store";
+import { SteerError } from "../../runtime/steer";
 import { getJobModel, setJobModel } from "../../runtime/llm";
 import { displayLaneName, laneForJobState } from "../../runtime/ticket";
 import { protectedProcedure, router } from "../init";
@@ -112,16 +113,15 @@ export const jobsRouter = router({
           const awaiting = j.state.startsWith("awaiting_");
           const finished = j.state === "done" || card.column === "done";
           const running =
-            !awaiting &&
             !finished &&
             (runtime.isJobRunning(j.id) || (live?.status === "running" && liveMatchesColumn));
           const agent =
             finished
               ? ("completed" as const)
-              : awaiting
-                ? ("idle" as const)
-                : running
-                  ? ("running" as const)
+              : running
+                ? ("running" as const)
+                : awaiting
+                  ? ("idle" as const)
                   : j.state === "failed" || (liveMatchesColumn && live?.status === "error")
                     ? ("failed" as const)
                     : liveMatchesColumn && live?.status === "done"
@@ -139,9 +139,9 @@ export const jobsRouter = router({
     if (!job) throw new TRPCError({ code: "NOT_FOUND" });
     const bundle = getSessionBundle(input.id);
     const live = bundle.current ?? getSession(input.id);
+    const pipeline = await loadPipelineForProject(job.projectId);
     const running =
       job.state !== "done" &&
-      !job.state.startsWith("awaiting_") &&
       (getRuntime().isJobRunning(input.id) || live?.status === "running");
     const status = (
       job.state === "done"
@@ -157,8 +157,10 @@ export const jobsRouter = router({
     return {
       jobId: input.id,
       projectId: job.projectId,
-      lane: displayLaneName(job.state, await loadPipelineForProject(job.projectId)),
+      lane: displayLaneName(job.state, pipeline),
       sessionLane: live?.lane ?? job.state,
+      steerLane: job.state.startsWith("awaiting_") ? (laneForJobState(job.state, pipeline)?.key ?? null) : null,
+      turns: bundle.turns ?? [],
       status,
       thinking: live?.thinking ?? "",
       text: live?.text ?? "",
@@ -195,6 +197,28 @@ export const jobsRouter = router({
       if (!job) throw new TRPCError({ code: "NOT_FOUND" });
       setJobModel(input.id, input.model);
       return { ok: true, model: getJobModel(input.id) };
+    }),
+  steer: protectedProcedure
+    .input(z.object({ id: z.string().uuid(), message: z.string().min(1).max(8000) }))
+    .mutation(async ({ ctx, input }) => {
+      await requireAgent();
+      const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      try {
+        const result = await getRuntime().steerLane(input.id, input.message);
+        return { ok: true as const, lane: result.laneId };
+      } catch (err) {
+        if (err instanceof SteerError) {
+          const code =
+            err.code === "not_found"
+              ? "NOT_FOUND"
+              : err.code === "running"
+                ? "CONFLICT"
+                : "PRECONDITION_FAILED";
+          throw new TRPCError({ code, message: err.message });
+        }
+        throw err;
+      }
     }),
   stop: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
     const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];

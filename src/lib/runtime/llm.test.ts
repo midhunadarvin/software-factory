@@ -23,17 +23,17 @@ describe("deltaOf", () => {
 });
 
 describe("llmApiStyle", () => {
-  it("uses chat completions for OpenCode Go GLM", () => {
-    expect(llmApiStyle("glm-5.3-flash", "https://opencode.ai/zen/go/v1")).toBe("chat");
-    expect(llmApiStyle("kimi-k2.6", "https://opencode.ai/zen/go/v1")).toBe("chat");
-    expect(llmApiStyle("deepseek-v4-pro", "https://opencode.ai/zen/go/v1")).toBe("chat");
+  it("uses the official openai-compatible provider for OpenCode Go GLM", () => {
+    expect(llmApiStyle("glm-5.3-flash", "https://opencode.ai/zen/go/v1")).toBe("openai-compatible");
+    expect(llmApiStyle("kimi-k2.6", "https://opencode.ai/zen/go/v1")).toBe("openai-compatible");
+    expect(llmApiStyle("deepseek-v4-pro", "https://opencode.ai/zen/go/v1")).toBe("openai-compatible");
   });
 
-  it("uses the Responses API for Grok/GPT on OpenCode Go and for xAI", () => {
-    expect(llmApiStyle("grok-4.6", "https://opencode.ai/zen/go/v1")).toBe("responses");
-    expect(llmApiStyle("gpt-5.6-luna", "https://opencode.ai/zen/go/v1")).toBe("responses");
-    expect(llmApiStyle("grok-4.5", "https://api.x.ai/v1")).toBe("responses");
-    expect(llmApiStyle("glm-5.3-flash", "https://api.x.ai/v1")).toBe("responses");
+  it("uses the official @ai-sdk/xai provider for Grok and for api.x.ai", () => {
+    expect(llmApiStyle("grok-4.6", "https://opencode.ai/zen/go/v1")).toBe("xai");
+    expect(llmApiStyle("gpt-5.6-luna", "https://opencode.ai/zen/go/v1")).toBe("xai");
+    expect(llmApiStyle("grok-4.5", "https://api.x.ai/v1")).toBe("xai");
+    expect(llmApiStyle("glm-5.3-flash", "https://api.x.ai/v1")).toBe("xai");
   });
 });
 
@@ -45,21 +45,21 @@ describe("getModel", () => {
     delete process.env.OPENAI_COMPAT_MODEL;
   });
 
-  it("builds a chat-completions model for OpenCode Go GLM", () => {
+  it("builds an openai-compatible model for OpenCode Go GLM", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     process.env.OPENAI_COMPAT_BASE_URL = "https://opencode.ai/zen/go/v1/chat/completions";
     process.env.OPENAI_COMPAT_MODEL = "glm-5.3-flash";
     const model = getModel() as { provider: string };
-    expect(model.provider).toMatch(/chat/i);
-    expect(model.provider).not.toMatch(/responses/i);
+    expect(model.provider).toMatch(/compatible|chat/i);
+    expect(model.provider).not.toMatch(/xai/i);
   });
 
-  it("builds a Responses model for Grok on OpenCode Go", () => {
-    process.env.OPENAI_API_KEY = "sk-test";
-    process.env.OPENAI_COMPAT_BASE_URL = "https://opencode.ai/zen/go/v1";
+  it("builds an @ai-sdk/xai model for Grok", () => {
+    process.env.XAI_API_KEY = "xai-test";
+    process.env.OPENAI_COMPAT_BASE_URL = "https://api.x.ai/v1";
     process.env.OPENAI_COMPAT_MODEL = "grok-4.6";
     const model = getModel() as { provider: string };
-    expect(model.provider).toMatch(/responses/i);
+    expect(model.provider).toMatch(/xai/i);
   });
 });
 

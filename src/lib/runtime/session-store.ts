@@ -23,11 +23,19 @@ export type AgentSession = {
   updatedAt: string;
 };
 
+export type ChatTurn = {
+  role: "user" | "agent";
+  lane: string;
+  text: string;
+  at: string;
+};
+
 export type SessionBundle = {
   jobId: string;
   projectId: string;
   current: AgentSession | null;
   history: AgentSession[];
+  turns: ChatTurn[];
 };
 
 type Store = {
@@ -45,7 +53,20 @@ function store(): Store {
 }
 
 function emptyBundle(jobId: string, projectId = ""): SessionBundle {
-  return { jobId, projectId, current: null, history: [] };
+  return { jobId, projectId, current: null, history: [], turns: [] };
+}
+
+function normalizeTurns(raw: unknown): ChatTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ChatTurn[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const t = row as Partial<ChatTurn>;
+    if (t.role !== "user" && t.role !== "agent") continue;
+    if (typeof t.lane !== "string" || typeof t.text !== "string" || typeof t.at !== "string") continue;
+    out.push({ role: t.role, lane: t.lane, text: t.text, at: t.at });
+  }
+  return out;
 }
 
 export function getSessionBundle(jobId: string, opts?: { refresh?: boolean }): SessionBundle {
@@ -54,11 +75,14 @@ export function getSessionBundle(jobId: string, opts?: { refresh?: boolean }): S
   const disk = readSessionBundle(jobId);
   if (mem?.current && disk.current) {
     const newer = disk.current.updatedAt >= mem.current.updatedAt ? disk : mem;
+    const memTurns = mem.turns ?? [];
+    const diskTurns = disk.turns ?? [];
     const merged: SessionBundle = {
       jobId,
       projectId: newer.projectId || mem.projectId || disk.projectId,
       current: newer.current,
       history: disk.history.length >= mem.history.length ? disk.history : mem.history,
+      turns: memTurns.length >= diskTurns.length ? memTurns : diskTurns,
     };
     store().bundles.set(jobId, merged);
     return merged;
@@ -72,6 +96,18 @@ export function getSession(jobId: string): AgentSession | undefined {
   return getSessionBundle(jobId).current ?? undefined;
 }
 
+export function chatTurns(jobId: string): ChatTurn[] {
+  return getSessionBundle(jobId).turns ?? [];
+}
+
+export function appendChatTurn(jobId: string, turn: ChatTurn): ChatTurn[] {
+  const bundle = getSessionBundle(jobId);
+  bundle.turns = [...(bundle.turns ?? []), turn];
+  store().bundles.set(jobId, bundle);
+  persistSession(jobId, true);
+  return bundle.turns;
+}
+
 export function startSession(
   jobId: string,
   projectId: string,
@@ -80,6 +116,7 @@ export function startSession(
 ): AgentSession {
   const bundle = getSessionBundle(jobId);
   bundle.projectId = projectId || bundle.projectId;
+  if (!bundle.turns) bundle.turns = [];
   if (bundle.current && (bundle.current.thinking || bundle.current.text || bundle.current.status !== "running")) {
     bundle.history.push(bundle.current);
   }
@@ -171,6 +208,10 @@ export function trimSessionsFromStep(jobId: string, step: RestartStepId, pipelin
   };
   bundle.history = bundle.history.filter(keep);
   if (bundle.current && !keep(bundle.current)) bundle.current = null;
+  bundle.turns = (bundle.turns ?? []).filter((t) => {
+    const idx = stepIndex(t.lane, pipeline);
+    return idx >= 0 && idx < cut;
+  });
   store().bundles.set(jobId, bundle);
   persistSession(jobId, true);
 }
@@ -194,12 +235,13 @@ export function readSessionBundle(jobId: string): SessionBundle {
         projectId: parsed.projectId || "",
         current: parsed.current,
         history: parsed.history,
+        turns: normalizeTurns((parsed as SessionBundle).turns),
       };
     }
     if (parsed && "status" in parsed && parsed.jobId) {
       const legacy = parsed as unknown as AgentSession;
       if (!legacy.id) legacy.id = randomUUID();
-      return { jobId, projectId: legacy.projectId || "", current: legacy, history: [] };
+      return { jobId, projectId: legacy.projectId || "", current: legacy, history: [], turns: [] };
     }
   } catch {
     /* missing */
