@@ -24,6 +24,9 @@ describe("normalizeLlmBaseUrl", () => {
     expect(normalizeLlmBaseUrl("https://opencode.ai/zen/go/v1/models")).toBe(
       "https://opencode.ai/zen/go/v1",
     );
+    expect(normalizeLlmBaseUrl("https://opencode.ai/zen/go/v1/messages")).toBe(
+      "https://opencode.ai/zen/go/v1",
+    );
   });
 
   it("keeps a /v1 root unchanged", () => {
@@ -50,17 +53,20 @@ describe("env helpers", () => {
     delete process.env.OPENAI_COMPAT_MODEL;
     delete process.env.XAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.FACTORY_LLM_API_KEY;
+    delete process.env.LLM_PROVIDER;
     delete process.env.FACTORY_ORIGIN;
     resetEnvCache();
   });
 
-  it("defaults the model to grok-4.5 and reports when a key is present", () => {
+  it("defaults the model to glm-5.3-flash and reports when a key is present", () => {
     delete process.env.OPENAI_COMPAT_MODEL;
-    expect(llmModel()).toBe("grok-4.5");
+    expect(llmModel()).toBe("glm-5.3-flash");
     process.env.OPENAI_COMPAT_MODEL = "grok-4.6";
     expect(llmModel()).toBe("grok-4.6");
     delete process.env.XAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.FACTORY_LLM_API_KEY;
     expect(llmConfigured()).toBe(false);
     process.env.XAI_API_KEY = "xai-test";
     expect(llmConfigured()).toBe(true);

@@ -11,6 +11,8 @@ import {
   type LlmHooks,
 } from "./llm";
 import { OPENCODE_SESSION_HEADER, resetOpenCodeSessionFallback } from "./opencode-session";
+import { loadBuiltinLlmProviders, registerLlmProvider, unregisterLlmProvider } from "../llm/registry";
+import { createChatModel } from "../llm/sdk";
 
 describe("deltaOf", () => {
   it("reads AI SDK v5 delta fields used by Responses models like gpt-5.6-luna", () => {
@@ -23,17 +25,22 @@ describe("deltaOf", () => {
 });
 
 describe("llmApiStyle", () => {
-  it("uses the official openai-compatible provider for OpenCode Go GLM", () => {
-    expect(llmApiStyle("glm-5.3-flash", "https://opencode.ai/zen/go/v1")).toBe("openai-compatible");
-    expect(llmApiStyle("kimi-k2.6", "https://opencode.ai/zen/go/v1")).toBe("openai-compatible");
-    expect(llmApiStyle("deepseek-v4-pro", "https://opencode.ai/zen/go/v1")).toBe("openai-compatible");
+  it("uses chat completions for OpenCode Go GLM", () => {
+    expect(llmApiStyle("glm-5.3-flash", "https://opencode.ai/zen/go/v1")).toBe("chat");
+    expect(llmApiStyle("kimi-k2.6", "https://opencode.ai/zen/go/v1")).toBe("chat");
+    expect(llmApiStyle("deepseek-v4-pro", "https://opencode.ai/zen/go/v1")).toBe("chat");
   });
 
-  it("uses the official @ai-sdk/xai provider for Grok and for api.x.ai", () => {
-    expect(llmApiStyle("grok-4.6", "https://opencode.ai/zen/go/v1")).toBe("xai");
-    expect(llmApiStyle("gpt-5.6-luna", "https://opencode.ai/zen/go/v1")).toBe("xai");
-    expect(llmApiStyle("grok-4.5", "https://api.x.ai/v1")).toBe("xai");
-    expect(llmApiStyle("glm-5.3-flash", "https://api.x.ai/v1")).toBe("xai");
+  it("uses the Responses API for Grok/GPT on OpenCode Go and for xAI", () => {
+    expect(llmApiStyle("grok-4.6", "https://opencode.ai/zen/go/v1")).toBe("responses");
+    expect(llmApiStyle("gpt-5.6-luna", "https://opencode.ai/zen/go/v1")).toBe("responses");
+    expect(llmApiStyle("grok-4.5", "https://api.x.ai/v1")).toBe("responses");
+    expect(llmApiStyle("glm-5.3-flash", "https://api.x.ai/v1")).toBe("responses");
+  });
+
+  it("uses Anthropic Messages for OpenCode Go Qwen and MiniMax", () => {
+    expect(llmApiStyle("qwen3.7-plus", "https://opencode.ai/zen/go/v1")).toBe("messages");
+    expect(llmApiStyle("minimax-m2.7", "https://opencode.ai/zen/go/v1")).toBe("messages");
   });
 });
 
@@ -41,25 +48,67 @@ describe("getModel", () => {
   afterEach(() => {
     delete process.env.OPENAI_API_KEY;
     delete process.env.XAI_API_KEY;
+    delete process.env.FACTORY_LLM_API_KEY;
+    delete process.env.LLM_PROVIDER;
+    delete process.env.STUB_LLM_KEY;
     delete process.env.OPENAI_COMPAT_BASE_URL;
     delete process.env.OPENAI_COMPAT_MODEL;
+    unregisterLlmProvider("stub_llm");
+    loadBuiltinLlmProviders();
   });
 
-  it("builds an openai-compatible model for OpenCode Go GLM", () => {
+  it("builds a chat-completions model for OpenCode Go GLM without a base URL", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.OPENAI_COMPAT_MODEL = "glm-5.3-flash";
+    const model = getModel() as { provider: string };
+    expect(model.provider).toMatch(/chat/i);
+    expect(model.provider).not.toMatch(/responses/i);
+  });
+
+  it("builds a chat-completions model for OpenCode Go GLM", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     process.env.OPENAI_COMPAT_BASE_URL = "https://opencode.ai/zen/go/v1/chat/completions";
     process.env.OPENAI_COMPAT_MODEL = "glm-5.3-flash";
     const model = getModel() as { provider: string };
-    expect(model.provider).toMatch(/compatible|chat/i);
-    expect(model.provider).not.toMatch(/xai/i);
+    expect(model.provider).toMatch(/chat/i);
+    expect(model.provider).not.toMatch(/responses/i);
   });
 
-  it("builds an @ai-sdk/xai model for Grok", () => {
-    process.env.XAI_API_KEY = "xai-test";
-    process.env.OPENAI_COMPAT_BASE_URL = "https://api.x.ai/v1";
+  it("builds a Responses model for Grok on OpenCode Go", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.OPENAI_COMPAT_BASE_URL = "https://opencode.ai/zen/go/v1";
     process.env.OPENAI_COMPAT_MODEL = "grok-4.6";
     const model = getModel() as { provider: string };
-    expect(model.provider).toMatch(/xai/i);
+    expect(model.provider).toMatch(/responses/i);
+  });
+
+  it("builds a Messages model for OpenCode Go Qwen", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.OPENAI_COMPAT_MODEL = "qwen3.7-plus";
+    const model = getModel() as { provider: string };
+    expect(model.provider).toMatch(/anthropic/i);
+  });
+
+  it("uses a registered stub plugin without special-casing built-in ids", () => {
+    registerLlmProvider({
+      id: "stub_llm",
+      label: "Stub",
+      description: "test",
+      keyEnvs: ["STUB_LLM_KEY"],
+      defaultBaseUrl: "https://stub.example/v1",
+      defaultModel: "stub-1",
+      priority: 200,
+      match: () => false,
+      listModels: async () => [{ id: "stub-1", style: "chat" }],
+      apiStyle: () => "chat",
+      createModel: (id, ctx) => createChatModel(id, ctx),
+    });
+    process.env.LLM_PROVIDER = "stub_llm";
+    process.env.STUB_LLM_KEY = "k";
+    process.env.OPENAI_COMPAT_MODEL = "stub-1";
+    const model = getModel() as { provider: string };
+    expect(model).toBeTruthy();
+    expect(model.provider).toMatch(/chat/i);
   });
 });
 
@@ -88,7 +137,8 @@ describe("listAvailableModels", () => {
       },
     );
     const out = await listAvailableModels();
-    expect(out.models).toContain("glm-5.3-flash");
+    expect(out.models.map((m) => m.id)).toContain("glm-5.3-flash");
+    expect(out.provider?.id).toBe("opencode_go");
     expect(seen).toHaveLength(1);
     expect(seen[0].get(OPENCODE_SESSION_HEADER)).toBeTruthy();
   });

@@ -1,0 +1,47 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. For security problems use the [security advisory form](https://github.com/midhunadarvin/software-factory/security/advisories/new), not this template.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you expect, and what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. pnpm dev
+        2. Open a repo
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: run
+    attributes:
+      label: How are you running the factory?
+      options:
+        - pnpm dev (local)
+        - pnpm start
+        - Docker / Compose
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: git rev-parse --short HEAD
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / health
+      description: Redact secrets. `GET /api/health` JSON and relevant server logs help.
+      render: text

@@ -6,6 +6,8 @@ describe("probeAgent", () => {
   afterEach(() => {
     delete process.env.XAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.FACTORY_LLM_API_KEY;
+    delete process.env.LLM_PROVIDER;
     delete process.env.OPENAI_COMPAT_BASE_URL;
     clearAgentStatusCache();
     resetOpenCodeSessionFallback();
@@ -15,10 +17,11 @@ describe("probeAgent", () => {
   it("blocks when no key is set", async () => {
     delete process.env.XAI_API_KEY;
     delete process.env.OPENAI_API_KEY;
+    delete process.env.FACTORY_LLM_API_KEY;
     const s = await probeAgent();
     expect(s.ready).toBe(false);
     expect(s.configured).toBe(false);
-    expect(s.error).toMatch(/XAI_API_KEY/);
+    expect(s.error).toMatch(/FACTORY_LLM_API_KEY/);
   });
 
   it("sends x-opencode-session when probing OpenCode Go", async () => {
