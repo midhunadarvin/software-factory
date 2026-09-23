@@ -16,6 +16,17 @@ import { loadLatestArtifact } from "../artifacts/store";
 vi.mock("./lane-agent", () => ({
   runLaneObjectAgent: vi.fn(),
 }));
+vi.mock("./harness", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./harness")>();
+  const { runLaneObjectAgent } = await import("./lane-agent");
+  return {
+    ...actual,
+    runLaneHarness: vi.fn(async (opts: Parameters<typeof runLaneObjectAgent>[0]) => {
+      const artifact = await runLaneObjectAgent(opts);
+      return { artifact, text: "" };
+    }),
+  };
+});
 
 import { runLaneObjectAgent } from "./lane-agent";
 import {

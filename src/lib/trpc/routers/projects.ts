@@ -31,6 +31,13 @@ import {
   resolvePipeline,
   tryParsePipeline,
 } from "../../runtime/pipeline";
+import {
+  HARNESS_IDS,
+  harnessFromProject,
+  listHarnesses,
+  parseHarnessConfig,
+  type HarnessId,
+} from "../../runtime/harness";
 
 function publicProject(p: typeof projects.$inferSelect) {
   const resolved = resolvePipeline(pipelineFromProject(p));
@@ -50,6 +57,7 @@ function publicProject(p: typeof projects.$inferSelect) {
     pipelineCustom: Boolean(p.pipeline),
     intake: intakeFromProject(p),
     integrations: publicIntegrations(),
+    harness: harnessFromProject(p),
   };
 }
 
@@ -319,6 +327,12 @@ export const projectsRouter = router({
         pollEnabled: z.boolean().optional(),
         defaultBranch: z.string().optional(),
         intake: z.unknown().optional(),
+        harness: z
+          .object({
+            default: z.enum(HARNESS_IDS),
+            byLane: z.record(z.enum(HARNESS_IDS)).optional(),
+          })
+          .optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -345,11 +359,23 @@ export const projectsRouter = router({
           pollEnabled: poll,
           defaultBranch: input.defaultBranch ?? p.defaultBranch,
           intake: intakeJson,
+          harness: input.harness
+            ? JSON.stringify(parseHarnessConfig(input.harness))
+            : p.harness,
           updatedAt: nowIso(),
         })
         .where(eq(projects.id, p.id));
       return { ok: true };
     }),
+  harnessStatus: protectedProcedure.query(async () => {
+    const rows = await Promise.all(
+      listHarnesses().map(async (h) => {
+        const detect = await h.detect();
+        return { id: h.id as HarnessId, label: h.label, description: h.description, detect };
+      }),
+    );
+    return { harnesses: rows };
+  }),
   delete: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
     const active = await ctx.db.select().from(jobs).where(eq(jobs.projectId, input.id));
     if (active.some((j) => !j.archivedAt && j.state === "implementation")) {

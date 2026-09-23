@@ -23,6 +23,7 @@ One Node process: `src/server.ts` starts FactoryRuntime + Next.js.
 | Pipeline config | `src/lib/runtime/pipeline/` |
 | New issue tracker (Slack, Asana, …) | `src/lib/integrations/plugins/` + `registerIntegration` |
 | New LLM backend | `src/lib/llm/plugins/` + `registerLlmProvider` |
+| New coding CLI harness | `src/lib/runtime/harness/` + `registerHarness` |
 | Schema | `src/lib/db/schema.ts` **and** `src/lib/db/migrate.ts` (`ALTER TABLE … ADD`) |
 | Tests | colocated `*.test.ts`, run `pnpm test` and `pnpm typecheck` |
 
@@ -30,11 +31,12 @@ One Node process: `src/server.ts` starts FactoryRuntime + Next.js.
 
 1. **New intake source** = an `IntegrationPlugin` (`verify`, `parse`, `match`, settings fields). Register it in `src/lib/integrations/registry.ts`. Webhooks already live at `POST /api/webhooks/[id]`. Do **not** add `/api/webhooks/<name>/route.ts`.
 2. **New LLM backend** = an `LlmProviderPlugin` (`match`, `listModels`, `apiStyle`, `createModel`). Register it in `src/lib/llm/registry.ts` or from `src/server.ts` before `runtime.start()`. Do **not** add a second `getModel()` branch in `src/lib/runtime/llm.ts`.
-3. **New factory lane or HITL step** = a pipeline action in `src/lib/runtime/pipeline/` plus an agent in `@software-factory/agent-sdk` (`registerAgent` / `packages/agent-sdk/src/catalog.ts`). Do not paste a new skill string into `src/lib/runtime`. Do not hardcode a new LangGraph node name unless the default pipeline needs a stable checkpoint name.
-4. **New coding agent** = `registerAgent` in the SDK. The factory looks agents up by id.
-5. **Job and pipeline progress** stay in `var/`. Never invent another store. Never commit `var/`.
-6. **Client components** must not import Node-only modules (`integrations/registry.ts`, `llm/registry.ts`, `db/client`, `better-sqlite3`). Use `src/lib/intake/settings.ts` and data from tRPC.
-7. **Reuse** the neighboring module. Do not add a package or top-level folder if an existing one already does the job.
+3. **New coding CLI harness** = a `HarnessPlugin` (`detect`, `start`) in `src/lib/runtime/harness/`. Register it in `src/lib/runtime/harness/registry.ts`. Do **not** spawn `claude` / `codex` / `cursor-agent` from graph nodes directly. Default remains `inprocess`.
+4. **New factory lane or HITL step** = a pipeline action in `src/lib/runtime/pipeline/` plus an agent in `@software-factory/agent-sdk` (`registerAgent` / `packages/agent-sdk/src/catalog.ts`). Do not paste a new skill string into `src/lib/runtime`. Do not hardcode a new LangGraph node name unless the default pipeline needs a stable checkpoint name.
+5. **New coding agent** = `registerAgent` in the SDK. The factory looks agents up by id.
+6. **Job and pipeline progress** stay in `var/`. Never invent another store. Never commit `var/`.
+7. **Client components** must not import Node-only modules (`integrations/registry.ts`, `llm/registry.ts`, `db/client`, `better-sqlite3`). Use `src/lib/intake/settings.ts` and data from tRPC.
+8. **Reuse** the neighboring module. Do not add a package or top-level folder if an existing one already does the job.
 
 ## Change style
 

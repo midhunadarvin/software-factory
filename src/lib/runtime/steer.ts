@@ -14,7 +14,7 @@ import {
 import { nowIso } from "../paths";
 import { wrapUntrusted } from "./untrusted";
 import { loadLaneContext } from "./context";
-import { runLaneObjectAgent } from "./lane-agent";
+import { runLaneHarness } from "./harness";
 import { loadPipelineForProject, laneForJobState, type ResolvedPipeline } from "./pipeline";
 import { getSession, appendChatTurn, chatTurns, type ChatTurn } from "./session-store";
 
@@ -159,7 +159,7 @@ export async function runSteer(
   });
   const turns = chatTurns(job.id).filter((t) => t.lane === target.laneId);
 
-  const drafted = await runLaneObjectAgent({
+  const drafted = await runLaneHarness({
     lane: target.laneId,
     jobId: job.id,
     projectId: job.projectId,
@@ -172,8 +172,10 @@ export async function runSteer(
       message: text,
     }),
     steer: true,
+    artifact: target.artifact,
+    currentArtifact: current,
   });
-  const parsed = target.schema.parse(drafted);
+  const parsed = target.schema.parse(drafted.artifact);
   await persistParkedArtifact(job.id, target.artifact, parsed);
   appendChatTurn(job.id, {
     role: "agent",

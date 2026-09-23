@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PipelineEditor } from "@/components/PipelineEditor";
 import { IntakeSettings } from "@/components/IntakeSettings";
+import { HarnessSettings } from "@/components/HarnessSettings";
 import { DEFAULT_PIPELINE } from "@/lib/runtime/pipeline/default";
 
 function SettingsInner() {
@@ -100,6 +101,7 @@ function SettingsInner() {
             </p>
           </CardContent>
         </Card>
+        <HarnessSettings projectId={id} value={p.harness} />
         <IntakeSettings
           origin={p.origin}
           value={p.intake}

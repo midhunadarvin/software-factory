@@ -57,6 +57,7 @@ import {
 import { graphNodeForState, RESTART_STEPS, type RestartStepId } from "./ticket";
 import { stopSession, trimSessionsFromStep } from "./session-store";
 import { assertSteerJob, runSteer } from "./steer";
+import { stopJobHarness } from "./harness";
 
 type CompiledGraph = ReturnType<typeof compileFactoryGraph>;
 
@@ -633,6 +634,7 @@ export class FactoryRuntime {
         });
       });
     }
+    await stopJobHarness(jobId);
     stopSession(jobId, "stopped by operator");
     const job = (await getDb().select().from(jobs).where(eq(jobs.id, jobId)))[0];
     if (job?.state.startsWith("awaiting_")) {

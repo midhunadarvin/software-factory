@@ -26,6 +26,7 @@ export const projects = sqliteTable(
     pollEnabled: integer("poll_enabled").notNull().default(0),
     pipeline: text("pipeline"),
     intake: text("intake"),
+    harness: text("harness"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },

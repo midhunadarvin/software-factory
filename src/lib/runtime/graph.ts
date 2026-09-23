@@ -31,7 +31,8 @@ import { startSession, finishSession, stopSession } from "./session-store";
 import { pushStream } from "./stream";
 import { logEvent } from "./events";
 import { wrapUntrusted } from "./untrusted";
-import { runLaneObjectAgent } from "./lane-agent";
+import { z } from "zod";
+import { runLaneHarness, resolveJobHarness } from "./harness";
 import { skillFor } from "./skills";
 import { ticketTools } from "./ticket";
 import { repoTools } from "./repo-tools";
@@ -232,7 +233,7 @@ async function triageDraft(
     drafted = TriageReportSchema.parse(existing.parsed);
   } else {
     const tree = job.worktreePath ? await readTree(job.worktreePath) : [];
-    const raw = await runLaneObjectAgent({
+    const { artifact: raw } = await runLaneHarness({
       lane: "triage",
       jobId: state.jobId,
       projectId: state.projectId,
@@ -277,14 +278,14 @@ async function requirementsDraft(
     drafted = FunctionalRequirementsSchema.parse(existing.parsed);
   } else {
     const tree = job.worktreePath ? await readTree(job.worktreePath) : [];
-    drafted = await runLaneObjectAgent({
+    drafted = (await runLaneHarness({
       lane: "requirements",
       jobId: state.jobId,
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: FunctionalRequirementsSchema,
       userPrompt: `Create the planning spec for this ticket, then call requestHumanReview so the human gets Approve/Reject. Keep it short.\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
-    });
+    })).artifact;
     await writeArtifact({ jobId: state.jobId, kind: "fr", source: "agent", body: drafted });
     await writeLaneContext(state.jobId, contextFromFr(drafted));
   }
@@ -320,14 +321,14 @@ async function techSpecDraft(
     drafted = TechnicalSpecSchema.parse(existing.parsed);
   } else {
     const tree = job.worktreePath ? await readTree(job.worktreePath) : [];
-    drafted = await runLaneObjectAgent({
+    drafted = (await runLaneHarness({
       lane: "tech_spec",
       jobId: state.jobId,
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: TechnicalSpecSchema,
       userPrompt: `Write a technical specification for this change. Inspect the repo (inspectRepo, readFile). Then submitArtifact with a complete spec JSON, then finishLane.\nApproved FR:\n${JSON.stringify(state.fr)}\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
-    });
+    })).artifact;
     await writeArtifact({
       jobId: state.jobId,
       kind: "tech_spec",
@@ -367,14 +368,14 @@ async function tasksDraft(
   if (existing) {
     drafted = TaskGraphSchema.parse(existing.parsed);
   } else {
-    drafted = await runLaneObjectAgent({
+    drafted = (await runLaneHarness({
       lane: "tasks",
       jobId: state.jobId,
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: TaskGraphSchema,
       userPrompt: `Break this spec into at most 40 tasks, then call submitArtifact with a tasks array ({ id: T-n, title, files, dependsOn, acceptance }). That exits the lane.\n${JSON.stringify(state.spec)}\nFR:\n${JSON.stringify(state.fr)}`,
-    });
+    })).artifact;
     await writeArtifact({
       jobId: state.jobId,
       kind: "task_graph",
@@ -432,38 +433,52 @@ async function runOneTask(
     return { status, tasks: next, error };
   };
 
-  if (!model) {
+  const harnessId = await resolveJobHarness(state.projectId, "implementation");
+  if (harnessId === "inprocess" && !model) {
     return mark("failed", "Agent model is not configured");
   }
 
   try {
     const prior = await loadLaneContext(state.jobId);
-    startSession(state.jobId, state.projectId, "implementation", getJobModel(state.jobId));
-    await completeText({
-      jobId: state.jobId,
-      maxSteps: 20,
-      system: `${skillFor("implementation")}\n\nEdit only the product files this task needs, gitCommit, then stop. A successful commit ends this task. Do not add .factory/ plans or specs.`,
-      prompt: `${formatContextBlock(prior)}\n${wrapUntrusted("task", JSON.stringify(task))}\nFR: ${JSON.stringify(state.fr?.summary)}\nSpec modules: ${JSON.stringify(state.spec?.modules)}`,
-      tools: {
-        ...ticketTools(state.jobId),
-        ...repoTools(worktree, {
-          write: true,
-          exec: true,
-          onCommit: () => stopSession(state.jobId),
-        }),
-      },
-      onPart: (part) => {
-        pushStream({
-          jobId: state.jobId,
-          projectId: state.projectId,
-          lane: "implementation",
-          kind: part.type === "tool" ? "tool" : part.type === "thinking" ? "thinking" : "text",
-          delta: part.delta,
-          tool: part.tool,
-        });
-      },
-    });
-    finishSession(state.jobId, "done");
+    const prompt = `${formatContextBlock(prior)}\n${wrapUntrusted("task", JSON.stringify(task))}\nFR: ${JSON.stringify(state.fr?.summary)}\nSpec modules: ${JSON.stringify(state.spec?.modules)}`;
+    if (harnessId === "inprocess") {
+      startSession(state.jobId, state.projectId, "implementation", getJobModel(state.jobId));
+      await completeText({
+        jobId: state.jobId,
+        maxSteps: 20,
+        system: `${skillFor("implementation")}\n\nEdit only the product files this task needs, gitCommit, then stop. A successful commit ends this task. Do not add .factory/ plans or specs.`,
+        prompt,
+        tools: {
+          ...ticketTools(state.jobId),
+          ...repoTools(worktree, {
+            write: true,
+            exec: true,
+            onCommit: () => stopSession(state.jobId),
+          }),
+        },
+        onPart: (part) => {
+          pushStream({
+            jobId: state.jobId,
+            projectId: state.projectId,
+            lane: "implementation",
+            kind: part.type === "tool" ? "tool" : part.type === "thinking" ? "thinking" : "text",
+            delta: part.delta,
+            tool: part.tool,
+          });
+        },
+      });
+      finishSession(state.jobId, "done");
+    } else {
+      await runLaneHarness({
+        lane: "implementation",
+        jobId: state.jobId,
+        projectId: state.projectId,
+        context: prior,
+        schema: z.unknown(),
+        userPrompt: prompt,
+        write: true,
+      });
+    }
   } catch (err) {
     const message = formatLlmError(err);
     finishSession(state.jobId, "error", message);
@@ -591,14 +606,14 @@ async function reviewDraft(
     if (job.worktreePath) {
       computedDiffs = [{ file: "(all)", diff: await reviewDiff(job.worktreePath) }];
     }
-    const object = await runLaneObjectAgent({
+    const object = (await runLaneHarness({
       lane: "review",
       jobId: state.jobId,
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: ReviewReportSchema,
       userPrompt: `Review this implementation against the spec, then submitArtifact with summary, verdict, findings, filesChanged.\nSpec: ${JSON.stringify(state.spec)}\nTasks: ${JSON.stringify(state.tasks)}\nDiff:\n${wrapUntrusted("diff", computedDiffs[0]?.diff ?? "")}`,
-    });
+    })).artifact;
     drafted = { ...object, computedDiffs };
     await writeArtifact({ jobId: state.jobId, kind: "review", source: "agent", body: drafted });
     await writeLaneContext(state.jobId, contextFromReview(drafted));
@@ -723,7 +738,7 @@ async function pullRequestNode(
         );
         diff = unstaged.stdout || "";
       }
-      draft = await runLaneObjectAgent({
+      draft = (await runLaneHarness({
         lane: "pull_request",
         jobId: state.jobId,
         projectId: state.projectId,
@@ -739,7 +754,7 @@ Spec: ${JSON.stringify(state.spec?.summary)}
 Tasks: ${JSON.stringify(state.tasks?.tasks.map((t) => `${t.id} ${t.title} (${t.status})`))}
 Review: ${JSON.stringify(state.review?.summary)}
 Diff:\n${wrapUntrusted("diff", diff.slice(0, 40_000))}`,
-      });
+      })).artifact;
       await writeArtifact({ jobId: state.jobId, kind: "pr", source: "agent", body: draft });
     }
 
@@ -853,17 +868,30 @@ async function fixNode(
 
   if (job.worktreePath) {
     const worktree = job.worktreePath;
-    startSession(state.jobId, state.projectId, "fix", getJobModel(state.jobId));
+    const harnessId = await resolveJobHarness(state.projectId, "fix");
+    const prompt = `${formatContextBlock(await loadLaneContext(state.jobId))}\nReview:\n${JSON.stringify({
+      verdict: review.verdict,
+      summary: review.summary,
+      findings,
+    })}\nSpec: ${JSON.stringify(state.spec?.summary)}`;
     try {
+      if (harnessId !== "inprocess") {
+        await runLaneHarness({
+          lane: "fix",
+          jobId: state.jobId,
+          projectId: state.projectId,
+          context: await loadLaneContext(state.jobId),
+          schema: z.unknown(),
+          userPrompt: prompt,
+          write: true,
+        });
+      } else {
+      startSession(state.jobId, state.projectId, "fix", getJobModel(state.jobId));
       await completeText({
         jobId: state.jobId,
         maxSteps: 20,
         system: `${skillFor("fix", action?.skill)}\n\nApply the review findings, gitCommit, then stop. Do not add .factory/ notes.`,
-        prompt: `${formatContextBlock(await loadLaneContext(state.jobId))}\nReview:\n${JSON.stringify({
-          verdict: review.verdict,
-          summary: review.summary,
-          findings,
-        })}\nSpec: ${JSON.stringify(state.spec?.summary)}`,
+        prompt,
         tools: {
           ...ticketTools(state.jobId),
           ...repoTools(worktree, {
@@ -884,6 +912,7 @@ async function fixNode(
         },
       });
       finishSession(state.jobId, "done");
+      }
     } catch (err) {
       finishSession(state.jobId, "error", formatLlmError(err));
       throw err;

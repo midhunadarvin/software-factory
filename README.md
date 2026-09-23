@@ -15,6 +15,7 @@ This is a **single-tenant** app (one operator, local or VPS). It is not a multi-
 - Implementation in an isolated linked worktree (`var/worktrees/`) — your current branch is not touched
 - Plugin intake: GitHub, Linear, Jira; add more without a new webhook route file
 - Plugin LLM backends: paste a key (OpenCode Go by default) and pick from `GET /v1/models`
+- Optional lane harnesses: in-process (default) or a terminal CLI (`claude`, `cursor-agent`, `codex`) in the job worktree
 - Durable board: SQLite + LangGraph checkpoints survive `pnpm dev` / container restarts
 
 ## Requirements

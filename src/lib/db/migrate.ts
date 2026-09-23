@@ -97,6 +97,11 @@ export function migrate(): void {
     /* already present */
   }
   try {
+    sqlite.exec("ALTER TABLE projects ADD COLUMN harness text");
+  } catch {
+    /* already present */
+  }
+  try {
     sqlite.exec("ALTER TABLE jobs ADD COLUMN source text NOT NULL DEFAULT 'local'");
   } catch {
     /* already present */
