@@ -24,7 +24,7 @@ Required in `.env`:
 |---|---|
 | `FACTORY_SECRET` | 64 hex chars **or** `base64:` + ≥32 bytes. Derives PAT encryption and session HMAC. |
 | `FACTORY_APP_PASSWORD` | Cookie login. Change the example value. |
-| `FACTORY_LLM_API_KEY` or `OPENAI_API_KEY` or `XAI_API_KEY` | LLM. Without a working key the UI blocks attach/create. |
+| `FACTORY_LLM_API_KEY` or `OPENAI_API_KEY` or `XAI_API_KEY` | LLM for in-process lanes. Optional when `claude` / `cursor-agent` is on PATH. |
 
 Useful overrides:
 
@@ -38,7 +38,7 @@ Useful overrides:
 | `FACTORY_ROOT` | repo root | Where `var/` lives |
 | `FACTORY_VAR_MAX_GB` | `20` | Cap on `var/` |
 
-Restart `pnpm dev` after changing env. The factory probes `GET {resolved provider}/models` before unlocking mutations.
+Restart `pnpm dev` after changing env. The factory unlocks when a coding CLI is on PATH, or after `GET {resolved provider}/models` succeeds.
 
 ```sh
 pnpm dev          # http://127.0.0.1:3000 — FactoryRuntime + Next.js

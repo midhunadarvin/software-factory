@@ -38,7 +38,9 @@ export const ActionConfigSchema = z.object({
   awaitingState: z.string().optional(),
   /** Gate id used by the approval API. Defaults to the lane id. */
   gate: z.string().optional(),
+  /** Extra operator instructions appended to this action's ask. */
   prompt: z.string().optional(),
+  /** Override the catalog system skill for this action. */
   skill: z.string().optional(),
 });
 export type ActionConfig = z.infer<typeof ActionConfigSchema>;

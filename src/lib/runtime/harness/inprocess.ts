@@ -5,7 +5,7 @@ import type { HarnessPlugin, HarnessSession, LaneRunRequest } from "./types";
 export const inprocessPlugin: HarnessPlugin = {
   id: "inprocess",
   label: "In-process",
-  description: "Factory generateText loop (default). No extra CLI.",
+  description: "Factory generateText loop. Needs an LLM API key.",
   detect: async () => ({ ok: true }),
   start: async (req: LaneRunRequest): Promise<HarnessSession> => {
     const schema = req.schema ?? z.unknown();
@@ -15,6 +15,7 @@ export const inprocessPlugin: HarnessPlugin = {
       projectId: req.projectId,
       context: req.context,
       userPrompt: req.userPrompt,
+      skill: req.skill,
       schema,
       steer: req.steer,
     }).then((artifact) => ({ artifact, text: "", code: 0 as const }));

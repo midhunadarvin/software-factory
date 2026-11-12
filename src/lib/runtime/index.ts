@@ -46,7 +46,7 @@ import { acquirePidfile, isAlive, readDeadPid, releasePidfile } from "./pidfile"
 import { RunQueue } from "./queue";
 import type { HitlResume } from "./types";
 import { assertAgentReady } from "./agent-status";
-import { formatLlmError, getJobModel, setJobModel } from "./llm";
+import { formatLlmError, getJobModel, getStoredJobModel, setJobModel, stripErrorStack } from "./llm";
 import {
   contextFromFr,
   contextFromSpec,
@@ -57,7 +57,7 @@ import {
 import { graphNodeForState, RESTART_STEPS, type RestartStepId } from "./ticket";
 import { stopSession, trimSessionsFromStep } from "./session-store";
 import { assertSteerJob, runSteer } from "./steer";
-import { stopJobHarness } from "./harness";
+import { detectCliHarnesses, resolveJobHarness, resolveLaneModel, stopJobHarness } from "./harness";
 
 type CompiledGraph = ReturnType<typeof compileFactoryGraph>;
 
@@ -105,6 +105,7 @@ export class FactoryRuntime {
     this.started = true;
     this.checkpointer = openCheckpointer();
     this.graph = this.graphFor(DEFAULT_PIPELINE);
+    await detectCliHarnesses(true);
   }
 
   async start() {
@@ -113,6 +114,7 @@ export class FactoryRuntime {
     this.started = true;
     this.checkpointer = openCheckpointer();
     this.graph = this.graphFor(DEFAULT_PIPELINE);
+    await detectCliHarnesses(true);
     const dead = readDeadPid();
     if (dead) {
       await getDb()
@@ -351,7 +353,7 @@ export class FactoryRuntime {
           resolve();
           return;
         }
-        reject(new Error(stderr.trim() || `agent worker exited ${code}`));
+        reject(new Error(stripErrorStack(stderr.trim() || `agent worker exited ${code}`)));
       });
     });
   }
@@ -599,7 +601,9 @@ export class FactoryRuntime {
     if (job.state !== "intake" && job.state !== "inbox") {
       throw new Error("only intake tickets can be sent to triage");
     }
-    if (model?.trim()) setJobModel(jobId, model.trim());
+    const harnessId = await resolveJobHarness(job.projectId, "triage");
+    const resolved = await resolveLaneModel(harnessId, model?.trim() || getStoredJobModel(jobId));
+    if (resolved) setJobModel(jobId, resolved);
     await getDb()
       .update(jobs)
       .set({

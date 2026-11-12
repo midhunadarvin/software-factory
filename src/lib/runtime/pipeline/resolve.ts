@@ -293,6 +293,11 @@ export function firstActionOf(resolved: ResolvedPipeline, laneId: string): Resol
   return resolved.laneById.get(laneId)?.actions[0];
 }
 
+export function withActionPrompt(base: string, prompt?: string): string {
+  const extra = prompt?.trim();
+  return extra ? `${base}\n\n# Custom instructions\n${extra}` : base;
+}
+
 export function artifactsFromStep(resolved: ResolvedPipeline, restartId: string): ArtifactKind[] {
   const cut = resolved.restartSteps.findIndex((s) => s.id === restartId);
   const start = cut < 0 ? 0 : cut;

@@ -193,9 +193,13 @@ export function finishSession(jobId: string, status: "done" | "error", error?: s
   persistSession(jobId, true);
 }
 
+export function abortSession(jobId: string) {
+  store().aborts.get(jobId)?.abort();
+}
+
 export function stopSession(jobId: string, reason?: string) {
   finishSession(jobId, "done", reason);
-  store().aborts.get(jobId)?.abort();
+  abortSession(jobId);
 }
 
 /** Keep sessions from steps before `step`; drop current/history from that step onward. */

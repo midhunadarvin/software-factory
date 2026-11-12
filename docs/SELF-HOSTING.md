@@ -14,7 +14,7 @@ Copy `.env.example` to `.env`. Set at least:
 
 - `FACTORY_SECRET` — not the example hex string
 - `FACTORY_APP_PASSWORD`
-- `FACTORY_LLM_API_KEY` (or `OPENAI_API_KEY` / `XAI_API_KEY`)
+- A coding CLI on PATH (`claude` or `cursor-agent`), **or** `FACTORY_LLM_API_KEY` (or `OPENAI_API_KEY` / `XAI_API_KEY`) for in-process lanes
 - `FACTORY_ORIGIN` — URL browsers and webhook providers can reach (HTTPS in production)
 
 Default LLM provider is OpenCode Go. Set `LLM_PROVIDER=xai|openai|custom` to select another registered plugin. `OPENAI_COMPAT_BASE_URL` is only for a custom `/v1` root — do not append `/chat/completions`, `/responses`, or `/messages`.

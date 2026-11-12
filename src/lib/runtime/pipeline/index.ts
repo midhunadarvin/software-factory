@@ -34,6 +34,7 @@ export {
   resolvePipeline,
   stepIndex,
   tryParsePipeline,
+  withActionPrompt,
   type BoardColumnDef,
   type ResolvedAction,
   type ResolvedLane,
@@ -41,3 +42,4 @@ export {
   type RestartStep,
 } from "./resolve";
 export { loadPipelineForJob, loadPipelineForProject, pipelineFromProject } from "./load";
+export { catalogAgentIdForAction, defaultSkillForAction, storedSkillForAction } from "./action-skill";

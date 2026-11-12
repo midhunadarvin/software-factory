@@ -11,10 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PipelineEditor } from "@/components/PipelineEditor";
 import { IntakeSettings } from "@/components/IntakeSettings";
 import { HarnessSettings } from "@/components/HarnessSettings";
-import { DEFAULT_PIPELINE } from "@/lib/runtime/pipeline/default";
+import { SettingsNav } from "@/components/SettingsNav";
 
 function SettingsInner() {
   const params = useSearchParams();
@@ -23,9 +22,6 @@ function SettingsInner() {
   const project = trpc.projects.get.useQuery({ id }, { enabled: Boolean(id) });
   const update = trpc.projects.update.useMutation();
   const rotate = trpc.projects.rotatePat.useMutation();
-  const updatePipeline = trpc.projects.updatePipeline.useMutation({
-    onSuccess: () => project.refetch(),
-  });
   const [pat, setPat] = useState("");
   if (!project.data) {
     return (
@@ -52,6 +48,7 @@ function SettingsInner() {
           02 · Project
         </p>
         <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
+        <SettingsNav projectId={id} current="project" />
         <Card className="mt-8">
           <CardHeader>
             <CardTitle>{p.name}</CardTitle>
@@ -96,8 +93,9 @@ function SettingsInner() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              LLM keys stay in env (<code>FACTORY_LLM_API_KEY</code>). Default provider is OpenCode Go; the board lists models from{" "}
-              <code>GET /v1/models</code>. Optional <code>LLM_PROVIDER</code> selects a registered plugin.
+              Lane workers default to <code>claude</code> / <code>cursor-agent</code> on PATH. An LLM key (
+              <code>FACTORY_LLM_API_KEY</code>) is only required for in-process lanes. Optional{" "}
+              <code>LLM_PROVIDER</code> selects a registered plugin.
             </p>
           </CardContent>
         </Card>
@@ -108,18 +106,6 @@ function SettingsInner() {
           integrations={p.integrations}
           onChange={(intake) => update.mutate({ id, intake })}
         />
-        <div className="mt-6">
-          <PipelineEditor
-            key={p.pipelineCustom ? "custom" : "default"}
-            value={p.pipeline ?? DEFAULT_PIPELINE}
-            defaultPipeline={DEFAULT_PIPELINE}
-            custom={Boolean(p.pipelineCustom)}
-            saving={updatePipeline.isPending}
-            error={updatePipeline.error?.message}
-            onSave={(pipeline) => updatePipeline.mutate({ id, pipeline })}
-            onReset={() => updatePipeline.mutate({ id, pipeline: null })}
-          />
-        </div>
       </main>
       </AgentGate>
     </div>

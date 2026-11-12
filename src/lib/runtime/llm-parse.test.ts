@@ -87,6 +87,16 @@ describe("error classification", () => {
     expect(isRetryableLlmError({ name: "AbortError", message: "aborted" })).toBe(false);
   });
 
+  it("drops worker stack frames from formatted errors", () => {
+    const msg = formatLlmError(
+      new Error(
+        "harness finished without triage JSON at .factory/issues/1/triage.json\n    at takeArtifact (/repo/run.ts:121:11)\n    at async triageDraft (/repo/graph.ts:245:31)",
+      ),
+    );
+    expect(msg).toBe("harness finished without triage JSON at .factory/issues/1/triage.json");
+    expect(msg).not.toMatch(/takeArtifact/);
+  });
+
   it("includes model output in formatted errors", () => {
     const msg = formatLlmError({
       message: "No object generated",

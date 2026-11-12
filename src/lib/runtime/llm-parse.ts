@@ -101,8 +101,17 @@ export function isRetryableLlmError(err: unknown): boolean {
   return rec.cause ? isRetryableLlmError(rec.cause) : false;
 }
 
+export function stripErrorStack(raw: string): string {
+  const text = raw.replace(/\r\n/g, "\n").trim();
+  const byLine = text.search(/\n\s*at\s+/);
+  if (byLine >= 0) return text.slice(0, byLine).trim();
+  const inline = text.search(/\s+at\s+(?:async\s+)?(?:[\w$.]+|<anonymous>)\s*\(/);
+  if (inline >= 0) return text.slice(0, inline).trim();
+  return text;
+}
+
 export function formatLlmError(err: unknown): string {
-  if (!err || typeof err !== "object") return String(err).slice(0, 4000);
+  if (!err || typeof err !== "object") return stripErrorStack(String(err)).slice(0, 4000);
   const rec = err as {
     message?: string;
     statusCode?: number;
@@ -111,7 +120,7 @@ export function formatLlmError(err: unknown): string {
     cause?: unknown;
     lastError?: unknown;
   };
-  const parts: string[] = [rec.message ?? String(err)];
+  const parts: string[] = [stripErrorStack(rec.message ?? String(err))];
   if (rec.statusCode) parts[0] += ` (${rec.statusCode})`;
   if (typeof rec.responseBody === "string" && rec.responseBody.trim()) {
     parts.push(rec.responseBody.slice(0, 400));

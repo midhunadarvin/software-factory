@@ -15,7 +15,7 @@ import { nowIso } from "../paths";
 import { wrapUntrusted } from "./untrusted";
 import { loadLaneContext } from "./context";
 import { runLaneHarness } from "./harness";
-import { loadPipelineForProject, laneForJobState, type ResolvedPipeline } from "./pipeline";
+import { loadPipelineForProject, laneForJobState, withActionPrompt, type ResolvedPipeline } from "./pipeline";
 import { getSession, appendChatTurn, chatTurns, type ChatTurn } from "./session-store";
 
 export const STEER_TURN_CAP = 12;
@@ -159,18 +159,25 @@ export async function runSteer(
   });
   const turns = chatTurns(job.id).filter((t) => t.lane === target.laneId);
 
+  const produce = pipeline.laneById.get(target.laneId)?.actions.find(
+    (a) => a.type === "produce" && a.artifact === target.artifact,
+  );
   const drafted = await runLaneHarness({
     lane: target.laneId,
     jobId: job.id,
     projectId: job.projectId,
     context: await loadLaneContext(job.id),
     schema: target.schema,
-    userPrompt: formatSteerPrompt({
-      laneId: target.laneId,
-      artifact: current,
-      turns,
-      message: text,
-    }),
+    skill: produce?.skill,
+    userPrompt: withActionPrompt(
+      formatSteerPrompt({
+        laneId: target.laneId,
+        artifact: current,
+        turns,
+        message: text,
+      }),
+      produce?.prompt,
+    ),
     steer: true,
     artifact: target.artifact,
     currentArtifact: current,

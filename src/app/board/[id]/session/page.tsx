@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { AgentRunControls } from "@/components/AgentRunControls";
+import { OpenWorktreeCard } from "@/components/OpenWorktree";
+import { FIRST_TOKEN_TIMEOUT_MS, firstTokenTimeoutMessage } from "@/lib/runtime/first-token";
 
 type Live = {
   lane: string;
@@ -68,15 +70,24 @@ function Collapse({
   children: ReactNode;
 }) {
   return (
-    <details className="group rounded-lg border border-border bg-muted/30" open={defaultOpen}>
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm select-none [&::-webkit-details-marker]:hidden">
+    <details className="group min-w-0 overflow-hidden rounded-lg border border-border bg-muted/30" open={defaultOpen}>
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm select-none [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
         <span className="font-medium">{title}</span>
-        {hint && <span className="truncate text-xs text-muted-foreground">{hint}</span>}
+        {hint && <span className="min-w-0 truncate text-xs text-muted-foreground">{hint}</span>}
       </summary>
-      <div className="border-t border-border px-3 py-2">{children}</div>
+      <div className="min-w-0 overflow-x-auto border-t border-border px-3 py-2">{children}</div>
     </details>
   );
+}
+
+function splitFailureText(raw: string) {
+  const text = raw.replace(/\r\n/g, "\n").trim();
+  const byLine = text.search(/\n\s*at\s+/);
+  const inline = text.search(/\s+at\s+(?:async\s+)?(?:[\w$.]+|<anonymous>)\s*\(/);
+  const splitAt = byLine >= 0 ? byLine : inline;
+  if (splitAt < 0) return { message: text, stack: "" };
+  return { message: text.slice(0, splitAt).trim(), stack: text.slice(splitAt).trim() };
 }
 
 function SessionInner() {
@@ -87,7 +98,7 @@ function SessionInner() {
   const projectId = queryProject || job.data?.projectId || "";
   const project = trpc.projects.get.useQuery({ id: projectId }, { enabled: Boolean(projectId) });
   const initial = trpc.jobs.session.useQuery({ id }, { refetchInterval: 500 });
-  const catalog = trpc.agent.models.useQuery();
+  const catalog = trpc.agent.models.useQuery({ jobId: id }, { enabled: Boolean(id) });
   const setModel = trpc.jobs.setModel.useMutation();
   const retry = trpc.jobs.retrySession.useMutation();
   const [live, setLive] = useState<Live>({
@@ -99,6 +110,7 @@ function SessionInner() {
   });
   const [model, setModelLocal] = useState("");
   const [sseState, setSseState] = useState<"off" | "live" | "error">("off");
+  const [tokenWaitError, setTokenWaitError] = useState<string | null>(null);
   const textRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -116,8 +128,21 @@ function SessionInner() {
   }, [initial.data]);
 
   useEffect(() => {
+    const ids = catalog.data?.models.map((m) => m.id) ?? [];
+    if (model && ids.length && !ids.includes(model)) {
+      setModelLocal(catalog.data?.defaultModel ?? "");
+      return;
+    }
     if (!model && catalog.data?.defaultModel) setModelLocal(catalog.data.defaultModel);
   }, [catalog.data, model]);
+
+  const hasModelTokens = Boolean(live.thinking || live.text || live.tools.length);
+  useEffect(() => {
+    setTokenWaitError(null);
+    if (live.status !== "running" || hasModelTokens) return;
+    const timer = setTimeout(() => setTokenWaitError(firstTokenTimeoutMessage()), FIRST_TOKEN_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, [id, live.status, hasModelTokens]);
 
   useEffect(() => {
     if (!projectId) return;
@@ -191,6 +216,9 @@ function SessionInner() {
   const debug = initial.data?.debug;
   const sessionError = live.error || job.data?.error || debug?.jobError || debug?.sessionError || undefined;
   const failed = live.status === "error" || job.data?.state === "failed" || Boolean(sessionError);
+  const failure = splitFailureText(
+    sessionError || "The session ended without a stored error. Check the event log below.",
+  );
   const awaiting = Boolean(job.data?.state.startsWith("awaiting_"));
   const finished = ["done", "paused", "rejected"].includes(job.data?.state ?? "");
   const busy = live.status === "running" || Boolean(initial.data?.running) || retry.isPending;
@@ -207,7 +235,7 @@ function SessionInner() {
           </Button>
         }
       />
-      <main className="mx-auto max-w-3xl space-y-4 px-4 py-8">
+      <main className="mx-auto min-w-0 max-w-3xl space-y-4 overflow-x-hidden px-4 py-8">
         <p className="text-[11px] font-medium tracking-[0.16em] text-muted-foreground uppercase">
           Agent session
         </p>
@@ -246,7 +274,7 @@ function SessionInner() {
         )}
 
         {failed && (
-          <Card className="border-red-200 bg-red-50">
+          <Card className="min-w-0 overflow-hidden border-red-200 bg-red-50">
             <CardHeader>
               <CardTitle className="text-sm text-red-900">Why this session failed</CardTitle>
               <CardDescription className="text-red-800/80">
@@ -254,13 +282,20 @@ function SessionInner() {
                 {debug?.boardColumn || job.data?.column || "—"} · state {debug?.jobState || job.data?.state}
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm text-red-950">
-              <p className="whitespace-pre-wrap font-mono text-xs leading-relaxed">
-                {sessionError || "The session ended without a stored error. Check the event log below."}
-              </p>
+            <CardContent className="min-w-0 space-y-3 text-sm text-red-950">
+              <pre className="max-h-32 overflow-auto font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
+                {failure.message}
+              </pre>
+              {failure.stack ? (
+                <Collapse title="Stack" hint={`${failure.stack.split("\n").length} frames`}>
+                  <pre className="max-h-48 overflow-auto font-mono text-[11px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
+                    {failure.stack}
+                  </pre>
+                </Collapse>
+              ) : null}
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                 <dt className="text-red-800/80">Model</dt>
-                <dd className="font-mono">{live.model || initial.data?.model || "—"}</dd>
+                <dd className="min-w-0 font-mono [overflow-wrap:anywhere]">{live.model || initial.data?.model || "—"}</dd>
                 <dt className="text-red-800/80">Job state</dt>
                 <dd className="font-mono">{debug?.jobState || job.data?.state || "—"}</dd>
                 <dt className="text-red-800/80">Last lane</dt>
@@ -290,7 +325,7 @@ function SessionInner() {
                       <span className={e.level === "error" ? "font-semibold text-red-800" : ""}>
                         {e.level} {e.event}
                       </span>
-                      <pre className="mt-0.5 max-h-28 overflow-auto whitespace-pre-wrap text-red-950/80">
+                      <pre className="mt-0.5 max-h-28 overflow-auto whitespace-pre-wrap text-red-950/80 [overflow-wrap:anywhere]">
                         {e.payload}
                       </pre>
                     </li>
@@ -305,6 +340,13 @@ function SessionInner() {
           </Card>
         )}
 
+        <OpenWorktreeCard
+          jobId={id}
+          path={job.data?.worktreePath}
+          column={job.data?.column}
+          state={job.data?.state ?? live.lane}
+        />
+
         <Card>
           <CardHeader>
             <CardTitle className="text-sm">Model</CardTitle>
@@ -312,7 +354,10 @@ function SessionInner() {
           </CardHeader>
           <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="min-w-0 flex-1 space-y-1.5">
-              <Label htmlFor="session-model">Available models</Label>
+              <Label htmlFor="session-model">
+                Available models
+                {catalog.data?.provider?.label ? ` · ${catalog.data.provider.label}` : ""}
+              </Label>
               <select
                 id="session-model"
                 className="h-9 w-full rounded-md border border-input bg-card px-3 text-sm"
@@ -390,17 +435,32 @@ function SessionInner() {
         <Collapse
           title="Thinking"
           hint={
-            live.status === "running"
-              ? live.thinking
-                ? `in progress · ${live.thinking.length} chars`
-                : "waiting for the model…"
+            tokenWaitError
+              ? "timed out"
               : live.thinking
-                ? `${live.thinking.length} chars`
-                : "empty"
+                ? live.status === "running"
+                  ? `in progress · ${live.thinking.length} chars`
+                  : `${live.thinking.length} chars`
+                : live.status === "running"
+                  ? live.text
+                    ? "no thinking trace"
+                    : "waiting for the model…"
+                  : "empty"
           }
+          defaultOpen={Boolean(tokenWaitError) || live.status === "running"}
         >
-          <pre className="max-h-[40vh] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed text-muted-foreground">
-            {live.thinking || (live.status === "running" ? "Waiting for the model…" : "No thinking captured yet.")}
+          <pre
+            className={`max-h-[40vh] overflow-auto whitespace-pre-wrap font-mono text-xs leading-relaxed [overflow-wrap:anywhere] ${
+              tokenWaitError ? "text-red-800" : "text-muted-foreground"
+            }`}
+          >
+            {tokenWaitError ||
+              live.thinking ||
+              (live.status === "running"
+                ? live.text
+                  ? "The model is streaming in Response. This lane did not emit a separate thinking channel."
+                  : "Waiting for the model…"
+                : "No thinking captured yet.")}
           </pre>
         </Collapse>
 

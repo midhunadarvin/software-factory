@@ -12,6 +12,7 @@ import { resetFlaggedTasks } from "../../artifacts/reset-flagged";
 import { loadLatestArtifact, writeArtifact } from "../../artifacts/store";
 import { nowIso } from "../../paths";
 import { gcWorktree, getRuntime, retryImplementation } from "../../runtime";
+import { openWorktreeInEditor } from "../../runtime/open-editor";
 import { badgeFor, columnForState, gateForState, nextStateForApprove } from "../../runtime/types";
 import { loadPipelineForProject } from "../../runtime/pipeline";
 import { TriageReportSchema } from "../../artifacts/schemas";
@@ -21,8 +22,9 @@ import { randomUUID } from "node:crypto";
 import { requireAgent } from "../require-agent";
 import { getSession, getSessionBundle } from "../../runtime/session-store";
 import { SteerError } from "../../runtime/steer";
-import { getJobModel, setJobModel } from "../../runtime/llm";
-import { displayLaneName, laneForJobState } from "../../runtime/ticket";
+import { setJobModel } from "../../runtime/llm";
+import { resolveJobHarness, resolveLaneModel } from "../../runtime/harness";
+import { displayLaneName, laneForJobState, nextLane } from "../../runtime/ticket";
 import { protectedProcedure, router } from "../init";
 
 function cardOf(
@@ -38,7 +40,7 @@ function cardOf(
     title: j.issueTitle,
     state: j.state,
     column: columnForState(j.state, j.lastActiveState, j.boardColumn, pipeline),
-    model: j.model ?? getJobModel(j.id),
+    model: j.model ?? null,
     badge: badgeFor(j.state, queued),
     local: j.issueNumber < 0,
     issueUrl: j.issueUrl,
@@ -167,7 +169,7 @@ export const jobsRouter = router({
       tools: live?.tools ?? [],
       error: live?.error ?? job.error ?? undefined,
       running,
-      model: live?.model ?? getJobModel(input.id),
+      model: live?.model ?? job.model ?? undefined,
       updatedAt: live?.updatedAt,
       risk: live?.risk,
       classification: live?.classification,
@@ -195,8 +197,16 @@ export const jobsRouter = router({
     .mutation(async ({ ctx, input }) => {
       const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
       if (!job) throw new TRPCError({ code: "NOT_FOUND" });
-      setJobModel(input.id, input.model);
-      return { ok: true, model: getJobModel(input.id) };
+      const current = laneForJobState(job.state);
+      const laneId =
+        !current || current.key === "intake"
+          ? current?.next ?? nextLane(job.state)?.key ?? "triage"
+          : current.key;
+      const harnessId = await resolveJobHarness(job.projectId, laneId);
+      const resolved = await resolveLaneModel(harnessId, input.model);
+      if (!resolved) throw new TRPCError({ code: "BAD_REQUEST", message: "no model for this harness" });
+      setJobModel(input.id, resolved);
+      return { ok: true, model: resolved };
     }),
   steer: protectedProcedure
     .input(z.object({ id: z.string().uuid(), message: z.string().min(1).max(8000) }))
@@ -452,6 +462,16 @@ export const jobsRouter = router({
     await ctx.db.update(jobs).set({ worktreePath: dest }).where(eq(jobs.id, id));
     return { id };
   }),
+  openWorktree: protectedProcedure
+    .input(z.object({ id: z.string(), editor: z.enum(["cursor", "vscode"]) }))
+    .mutation(async ({ ctx, input }) => {
+      const job = (await ctx.db.select().from(jobs).where(eq(jobs.id, input.id)))[0];
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!job.worktreePath) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "this ticket has no worktree yet" });
+      }
+      return openWorktreeInEditor(job.worktreePath, input.editor);
+    }),
   retryImplementation: protectedProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input }) => {

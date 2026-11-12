@@ -17,6 +17,7 @@ import { agentMaxSteps, resolveAgentSystem } from "@software-factory/agent-sdk";
 import { formatContextBlock, type LaneContext } from "./context";
 import { logEvent } from "./events";
 import {
+  abortSession,
   finishSession,
   getSession,
   getSessionArtifact,
@@ -25,6 +26,7 @@ import {
   startSession,
   stopSession,
 } from "./session-store";
+import { FIRST_TOKEN_TIMEOUT_MS, firstTokenTimeoutMessage, startFirstTokenWatch } from "./first-token";
 import { pushStream } from "./stream";
 import { parseStructured } from "./llm-parse";
 import { TriageReportSchema } from "../artifacts/schemas";
@@ -42,6 +44,7 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
   projectId: string;
   context: LaneContext | null;
   userPrompt: string;
+  skill?: string;
   schema: S;
   /** Revise a parked artifact. Tools must not advance the ticket. */
   steer?: boolean;
@@ -57,14 +60,22 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
     payload: { lane: opts.lane, model: getJobModel(opts.jobId) },
   });
 
+  let firstTokenTimedOut = false;
   try {
+    const watch = startFirstTokenWatch({
+      onTimeout: () => {
+        firstTokenTimedOut = true;
+        abortSession(opts.jobId);
+      },
+    });
     const reasoning = await completeText({
       jobId: opts.jobId,
-      system: resolveAgentSystem(opts.lane),
+      system: resolveAgentSystem(opts.lane, opts.skill),
       prompt: `${formatContextBlock(opts.context)}\n\nReason through this lane task:\n${opts.userPrompt}`,
       tools: await toolsForLane(opts.jobId, opts.lane, opts.schema, opts.steer),
       maxSteps: agentMaxSteps(opts.lane),
       onPart: (part) => {
+        watch.noteToken();
         if (part.type === "thinking" || part.type === "text") {
           pushStream({
             jobId: opts.jobId,
@@ -85,6 +96,10 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
         }
       },
     });
+    watch.clear();
+    if (firstTokenTimedOut) {
+      throw new Error(firstTokenTimeoutMessage(FIRST_TOKEN_TIMEOUT_MS));
+    }
     if (getSessionArtifact(opts.jobId) == null) {
       if (opts.lane === "requirements" || opts.lane === "tech_spec") {
         const fallback =
@@ -115,7 +130,7 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
         : await completeObject({
         jobId: opts.jobId,
         schema: opts.schema,
-        system: `${resolveAgentSystem(opts.lane)}\n\nYou are the only agent for this lane. Emit only the structured artifact.`,
+        system: `${resolveAgentSystem(opts.lane, opts.skill)}\n\nYou are the only agent for this lane. Emit only the structured artifact.`,
         prompt: `${formatContextBlock(opts.context)}\n\nYour reasoning:\n${reasoning.slice(0, 6000)}\n\nNow produce the artifact:\n${opts.userPrompt}`,
         onPart: (part) => {
           if (sessionWasStopped(opts.jobId)) return;
@@ -138,6 +153,18 @@ export async function runLaneObjectAgent<S extends ZodTypeAny>(opts: {
     });
     return object;
   } catch (err) {
+    if (firstTokenTimedOut) {
+      const message = firstTokenTimeoutMessage(FIRST_TOKEN_TIMEOUT_MS);
+      finishSession(opts.jobId, "error", message);
+      await logEvent({
+        projectId: opts.projectId,
+        jobId: opts.jobId,
+        level: "error",
+        event: "lane.agent.end",
+        payload: { lane: opts.lane, ok: false, error: message },
+      });
+      throw new Error(message);
+    }
     const fallback = artifactFromStoppedSession(opts.lane, opts.jobId, opts.schema, "");
     if (fallback) {
       if (!sessionWasStopped(opts.jobId)) finishSession(opts.jobId, "done");

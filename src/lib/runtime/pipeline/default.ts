@@ -65,7 +65,15 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
       label: "Implementation",
       column: "implementation",
       queue: "impl",
-      actions: [{ type: "implement", graphNode: "implementation" }],
+      actions: [
+        { type: "implement", graphNode: "implementation" },
+        {
+          type: "human_approval",
+          graphNode: "implementation_gate",
+          awaitingState: "awaiting_implementation_approval",
+          gate: "implementation",
+        },
+      ],
     },
     {
       id: "review",

@@ -89,6 +89,7 @@ A later operator message is intent: revise the task graph to match it, then subm
 3. gitCommit with a short message. That ends this task.
 4. If gitCommit is unavailable, call finishLane() after the commit.
 Never write, stage, or commit factory working notes: nothing under .factory/, and no requirements, tech-spec, visualplan, tasks.json, review.md, or pull-request.md files. Those stay in the factory, not in the repo or the pull request.
+Do not run full-repo format, lint, typecheck, install, or eval recording. If the task is only checks, git diff the default branch for any named paths, commit leftover product files, and stop.
 The factory then runs the next task or moves the ticket to review. Do not keep exploring after the commit.`,
   },
   {

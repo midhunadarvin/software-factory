@@ -19,6 +19,7 @@ import {
   publicPipeline,
   stepIndex,
   tryParsePipeline,
+  withActionPrompt,
 } from "./resolve";
 import { PipelineConfigSchema, type PipelineConfig } from "./schema";
 
@@ -51,6 +52,7 @@ describe("default pipeline", () => {
     expect(graphNodeForState(p, "intake")).toBeUndefined();
     expect(graphNodeForState(p, "done")).toBeUndefined();
     expect(p.graphNodes).toContain("tasks_gate");
+    expect(p.graphNodes).toContain("implementation_gate");
     expect(p.graphNodes).toContain("implementation_failed_gate");
   });
 
@@ -70,6 +72,9 @@ describe("default pipeline", () => {
     expect(laneForJobState(p, "inbox")?.id).toBe("intake");
     expect(laneForJobState(p, "awaiting_requirements_approval")?.id).toBe("requirements");
     expect(laneForJobState(p, "awaiting_review_approval")?.id).toBe("review");
+    expect(laneForJobState(p, "awaiting_implementation_approval")?.id).toBe("implementation");
+    expect(gateForState(p, "awaiting_implementation_approval")).toBe("implementation");
+    expect(nextStateForApprove(p, "awaiting_implementation_approval", "approve")).toBe("review");
     expect(gateForState(p, "awaiting_pr_approval")).toBe("pr");
     expect(nextStateForApprove(p, "awaiting_pr_approval", "approve")).toBe("done");
     expect(nextStateForApprove(p, "awaiting_review_approval", "send_back")).toBe("implementation");
@@ -128,6 +133,35 @@ describe("custom pipeline", () => {
     expect(review.actions.map((a) => a.type)).toEqual(["produce", "fix", "human_approval"]);
     expect(nextAction(p, "review_draft")?.graphNode).toBe("review_fix");
     expect(nextAction(p, "review_fix")?.graphNode).toBe("review_gate");
+  });
+
+  it("keeps action skill and prompt overrides", () => {
+    const custom: PipelineConfig = {
+      version: 1,
+      lanes: DEFAULT_PIPELINE.lanes.map((lane) =>
+        lane.id === "review"
+          ? {
+              ...lane,
+              actions: [
+                {
+                  type: "produce",
+                  artifact: "review",
+                  skill: "Only report blockers.",
+                  prompt: "Ignore visual nits.",
+                },
+                ...lane.actions.slice(1),
+              ],
+            }
+          : lane,
+      ),
+    };
+    const p = resolvePipeline(custom);
+    const produce = p.laneById.get("review")?.actions[0];
+    expect(produce?.skill).toBe("Only report blockers.");
+    expect(produce?.prompt).toBe("Ignore visual nits.");
+    expect(withActionPrompt("Review the diff.", produce?.prompt)).toContain("# Custom instructions");
+    expect(withActionPrompt("Review the diff.", produce?.prompt)).toContain("Ignore visual nits.");
+    expect(withActionPrompt("Review the diff.")).toBe("Review the diff.");
   });
 
   it("rejects a pipeline with no intake", () => {

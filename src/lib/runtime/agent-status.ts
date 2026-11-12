@@ -2,6 +2,8 @@ import { llmConfigured, llmModel } from "../env";
 import { readLlmResolveEnv } from "../llm/env";
 import { resolveLlmProvider } from "../llm/resolve";
 import { guardedLlmFetch } from "../llm/sdk";
+import { detectCliHarnesses } from "./harness/detect";
+import type { HarnessId } from "./harness/types";
 
 export type AgentStatus = {
   ready: boolean;
@@ -10,6 +12,7 @@ export type AgentStatus = {
   model: string;
   baseUrl: string;
   provider: string | null;
+  harness: HarnessId | null;
   error: string | null;
   checkedAt: string;
 };
@@ -28,6 +31,9 @@ export async function getAgentStatus(force = false): Promise<AgentStatus> {
   return status;
 }
 
+const NO_WORKER_ERROR =
+  "No lane worker. Install claude or cursor-agent on PATH (then restart), or set FACTORY_LLM_API_KEY for in-process lanes.";
+
 export async function probeAgent(): Promise<AgentStatus> {
   const env = readLlmResolveEnv();
   const resolved = resolveLlmProvider();
@@ -36,6 +42,20 @@ export async function probeAgent(): Promise<AgentStatus> {
   const checkedAt = new Date().toISOString();
   const baseUrl = resolved?.baseUrl ?? env.baseUrl ?? "https://opencode.ai/zen/go/v1";
   const provider = resolved?.plugin.id ?? null;
+  const harness = (await detectCliHarnesses())[0] ?? null;
+  const cliReady = (extra: Partial<AgentStatus> = {}): AgentStatus => ({
+    ready: true,
+    configured,
+    connected: false,
+    model,
+    baseUrl,
+    provider,
+    harness,
+    error: null,
+    checkedAt,
+    ...extra,
+  });
+  if (harness && !configured) return cliReady();
   if (!configured) {
     return {
       ready: false,
@@ -44,12 +64,13 @@ export async function probeAgent(): Promise<AgentStatus> {
       model,
       baseUrl,
       provider,
-      error:
-        "No agent API key. Set FACTORY_LLM_API_KEY (OpenCode Go by default) or XAI_API_KEY, then restart the factory. Optional: LLM_PROVIDER=opencode_go|xai|openai|custom and OPENAI_COMPAT_BASE_URL for a custom /v1 root.",
+      harness: null,
+      error: NO_WORKER_ERROR,
       checkedAt,
     };
   }
   if (!resolved) {
+    if (harness) return cliReady();
     return {
       ready: false,
       configured: true,
@@ -57,6 +78,7 @@ export async function probeAgent(): Promise<AgentStatus> {
       model,
       baseUrl,
       provider,
+      harness: null,
       error: "LLM provider could not be resolved. Set LLM_PROVIDER to a registered plugin id.",
       checkedAt,
     };
@@ -74,10 +96,12 @@ export async function probeAgent(): Promise<AgentStatus> {
       model,
       baseUrl: resolved.baseUrl,
       provider: resolved.plugin.id,
+      harness: harness ?? "inprocess",
       error: null,
       checkedAt,
     };
   } catch (err) {
+    if (harness) return cliReady({ baseUrl: resolved.baseUrl, provider: resolved.plugin.id });
     return {
       ready: false,
       configured: true,
@@ -85,6 +109,7 @@ export async function probeAgent(): Promise<AgentStatus> {
       model,
       baseUrl: resolved.baseUrl,
       provider: resolved.plugin.id,
+      harness: null,
       error: `Cannot reach ${resolved.plugin.label} at ${resolved.baseUrl}: ${err instanceof Error ? err.message : String(err)}`,
       checkedAt,
     };

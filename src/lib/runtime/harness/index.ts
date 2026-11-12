@@ -1,6 +1,10 @@
-export { DEFAULT_HARNESS_CONFIG, harnessForLane, harnessFromProject, parseHarnessConfig } from "./config";
+export { DEFAULT_HARNESS_CONFIG, defaultHarnessConfig, harnessForLane, harnessFromProject, parseHarnessConfig } from "./config";
+export { detectCliHarnesses, preferredCliHarness } from "./detect";
 export { buildLaneBrief } from "./brief";
 export { artifactFileName, artifactFilePath, readArtifactFile, writeArtifactFile } from "./artifact-file";
 export { listHarnesses, getHarness, registerHarness, requireHarness, loadBuiltinHarnesses } from "./registry";
 export { runLaneHarness, resolveJobHarness, stopJobHarness } from "./run";
+export { listModelsForJob, clearHarnessModelCache } from "./models";
+export { resolveLaneModel, catalogForHarness } from "./resolve-model";
+export { modelFlagForHarness, cliSpawnEnv } from "./model-flag";
 export { HARNESS_IDS, type HarnessId, type HarnessConfig, type HarnessPlugin } from "./types";

@@ -62,6 +62,16 @@ describe("resetFlaggedTasks", () => {
     expect(nextPending(pending)?.id).toBe("T-2");
   });
 
+  it("nextPending retries an in-progress task after a crash", () => {
+    const mid = {
+      ...graph,
+      tasks: graph.tasks.map((t) =>
+        t.id === "T-2" ? { ...t, status: "in_progress" as const } : t,
+      ),
+    };
+    expect(nextPending(mid)?.id).toBe("T-2");
+  });
+
   it("resets failed tasks even without a matching finding", () => {
     const next = resetFlaggedTasks(
       {

@@ -31,6 +31,7 @@ export {
   parseStructured,
   recoverStructuredValue,
   repairStructuredText,
+  stripErrorStack,
   withLlmAttempts,
 } from "./llm-parse";
 
@@ -49,15 +50,14 @@ export function clearModelListCache() {
   modelListCache = null;
 }
 
-export function getJobModel(jobId: string): string {
+export function getStoredJobModel(jobId: string): string | null {
   const cached = jobModels.get(jobId);
   if (cached) return cached;
-  const fromDb = readStoredJobModel(jobId);
-  if (fromDb) {
-    jobModels.set(jobId, fromDb);
-    return fromDb;
-  }
-  return llmModel();
+  return readStoredJobModel(jobId);
+}
+
+export function getJobModel(jobId: string): string {
+  return getStoredJobModel(jobId) ?? llmModel();
 }
 
 export function setJobModel(jobId: string, model: string) {

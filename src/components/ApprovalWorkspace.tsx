@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, RotateCcw, ExternalLink, Trash2, Radio } from "lucide-react";
+import { OpenWorktreeCard } from "@/components/OpenWorktree";
 import { trpc } from "@/lib/trpc/client";
 import { AppHeader } from "@/components/AppChrome";
 import { Badge } from "@/components/ui/badge";
@@ -387,12 +388,14 @@ export function ApprovalWorkspace({
                 <CardTitle className="text-base">Human review</CardTitle>
                 <CardDescription>
                   {gate === "tech_spec"
-                    ? "Chat with the tech spec agent if you want changes, then approve to continue or reject."
+                    ? "Chat with the tech spec agent if you want changes, or open the worktree to inspect the repo, then approve to continue or reject."
                     : gate === "requirements"
                       ? "Chat with the planning agent if you want changes, then approve to start tech spec or reject."
-                      : gate === "pr"
-                        ? "Chat to revise the PR text if needed. Approve to open it on GitHub (or as a draft), then the ticket moves to Done."
-                      : `Chat with this lane’s agent to revise the document, then approve or send it back.`}
+                      : gate === "implementation"
+                        ? "Open the worktree, make any manual edits, then approve to continue toward the pull request. Uncommitted edits are picked up when the PR is prepared."
+                        : gate === "pr"
+                        ? "Chat to revise the PR text if needed. You can also edit the worktree. Approve to open it on GitHub (or as a draft), then the ticket moves to Done."
+                        : `Chat with this lane’s agent to revise the document, or open the worktree to edit files, then approve or send it back.`}
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
@@ -428,7 +431,13 @@ export function ApprovalWorkspace({
                     });
                   }}
                 >
-                  {gate === "pr" ? (openAsDraft ? "Approve and create draft PR" : "Approve and open PR") : "Approve"}
+                  {gate === "pr"
+                    ? openAsDraft
+                      ? "Approve and create draft PR"
+                      : "Approve and open PR"
+                    : gate === "implementation"
+                      ? "Approve and continue to PR"
+                      : "Approve"}
                 </Button>
                 {gate === "review" && (
                   <Button
@@ -450,6 +459,13 @@ export function ApprovalWorkspace({
               </CardContent>
             </Card>
           )}
+
+          <OpenWorktreeCard
+            jobId={jobId}
+            path={job.data?.worktreePath}
+            column={column}
+            state={job.data?.state}
+          />
 
           <Card>
             <CardHeader>

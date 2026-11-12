@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { END } from "@langchain/langgraph";
-import { routeFromStart } from "./graph";
+import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { compileFactoryGraph, routeFromStart } from "./graph";
 import { DEFAULT_PIPELINE } from "./pipeline/default";
 import { resolvePipeline } from "./pipeline";
 
@@ -19,6 +20,7 @@ describe("routeFromStart", () => {
   it("honors an explicit dest stage so restart/continue land on that node", () => {
     expect(routeFromStart({ stage: "requirements_draft" })).toBe("requirements_draft");
     expect(routeFromStart({ stage: "tech_spec_gate" })).toBe("tech_spec_gate");
+    expect(routeFromStart({ stage: "implementation_gate" })).toBe("implementation_gate");
   });
 
   it("routes a review fix node when that action is configured", () => {
@@ -68,5 +70,20 @@ describe("routeFromStart", () => {
     const resolved = resolvePipeline(custom);
     expect(routeFromStart({ stage: "" }, resolved)).toBe("implementation");
     expect(routeFromStart({ stage: "implementation" }, resolved)).toBe("implementation");
+  });
+
+  it("does not treat publish as a compiled graph node", () => {
+    const resolved = resolvePipeline(DEFAULT_PIPELINE);
+    expect(resolved.graphNodes).toContain("pull_request_publish");
+    expect(routeFromStart({ stage: "pull_request_publish" }, resolved)).toBe("triage_draft");
+  });
+});
+
+describe("compileFactoryGraph", () => {
+  it("compiles the default pipeline whose PR lane ends in publish", () => {
+    const saver = (
+      SqliteSaver as unknown as { fromConnString: (s: string) => SqliteSaver }
+    ).fromConnString(":memory:");
+    expect(() => compileFactoryGraph(saver)).not.toThrow();
   });
 });

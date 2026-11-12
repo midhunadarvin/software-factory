@@ -21,6 +21,7 @@ describe("badgeFor", () => {
 describe("types wrappers use the default pipeline", () => {
   it("mirrors resolve helpers without an explicit pipeline", () => {
     expect(gateForState("awaiting_review_approval")).toBe("review");
+    expect(gateForState("awaiting_implementation_approval")).toBe("implementation");
     expect(gateForState("implementation")).toBeNull();
     expect(nextStateForApprove("awaiting_tasks_approval", "approve")).toBe("implementation");
     expect(nextStateForApprove("awaiting_review_approval", "send_back")).toBe("implementation");

@@ -53,6 +53,7 @@ import {
   nextAction,
   nextLane,
   resolvePipeline,
+  withActionPrompt,
   type ResolvedAction,
   type ResolvedPipeline,
 } from "./pipeline";
@@ -151,6 +152,14 @@ function failedGateNode(action: ResolvedAction): string {
   return action.graphNode === "implementation" ? "implementation_failed_gate" : `${action.graphNode}_failed_gate`;
 }
 
+function actionHarness(resolved: ResolvedPipeline, node: string, userPrompt: string) {
+  const action = resolved.actionByNode.get(node);
+  return {
+    skill: action?.skill,
+    userPrompt: withActionPrompt(userPrompt, action?.prompt),
+  };
+}
+
 async function advanceFrom(
   state: FactoryStateType,
   resolved: ResolvedPipeline,
@@ -239,7 +248,11 @@ async function triageDraft(
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: TriageReportSchema,
-      userPrompt: `Triage this ticket. Every ticket still visits planning, tech spec, tasks, implementation, and PR. If simple and low risk, set fastTrack true so planning HITL auto-advances.\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
+      ...actionHarness(
+        resolved,
+        node,
+        `Triage this ticket. Every ticket still visits planning, tech spec, tasks, implementation, and PR. If simple and low risk, set fastTrack true so planning HITL auto-advances.\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
+      ),
     });
     drafted = { ...raw, fastTrack: triageFastTrack(raw) };
     await writeArtifact({ jobId: state.jobId, kind: "triage", source: "agent", body: drafted });
@@ -284,7 +297,11 @@ async function requirementsDraft(
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: FunctionalRequirementsSchema,
-      userPrompt: `Create the planning spec for this ticket, then call requestHumanReview so the human gets Approve/Reject. Keep it short.\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
+      ...actionHarness(
+        resolved,
+        node,
+        `Create the planning spec for this ticket, then call requestHumanReview so the human gets Approve/Reject. Keep it short.\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
+      ),
     })).artifact;
     await writeArtifact({ jobId: state.jobId, kind: "fr", source: "agent", body: drafted });
     await writeLaneContext(state.jobId, contextFromFr(drafted));
@@ -327,7 +344,11 @@ async function techSpecDraft(
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: TechnicalSpecSchema,
-      userPrompt: `Write a technical specification for this change. Inspect the repo (inspectRepo, readFile). Then submitArtifact with a complete spec JSON, then finishLane.\nApproved FR:\n${JSON.stringify(state.fr)}\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
+      ...actionHarness(
+        resolved,
+        node,
+        `Write a technical specification for this change. Inspect the repo (inspectRepo, readFile). Then submitArtifact with a complete spec JSON, then finishLane.\nApproved FR:\n${JSON.stringify(state.fr)}\n${issueContext(job)}\nRepo tree:\n${wrapUntrusted("tree", tree.join("\n"))}`,
+      ),
     })).artifact;
     await writeArtifact({
       jobId: state.jobId,
@@ -374,7 +395,11 @@ async function tasksDraft(
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: TaskGraphSchema,
-      userPrompt: `Break this spec into at most 40 tasks, then call submitArtifact with a tasks array ({ id: T-n, title, files, dependsOn, acceptance }). That exits the lane.\n${JSON.stringify(state.spec)}\nFR:\n${JSON.stringify(state.fr)}`,
+      ...actionHarness(
+        resolved,
+        node,
+        `Break this spec into at most 40 tasks, then call submitArtifact with a tasks array ({ id: T-n, title, files, dependsOn, acceptance }). That exits the lane.\n${JSON.stringify(state.spec)}\nFR:\n${JSON.stringify(state.fr)}`,
+      ),
     })).artifact;
     await writeArtifact({
       jobId: state.jobId,
@@ -410,6 +435,7 @@ async function tasksGate(
 async function runOneTask(
   state: FactoryStateType,
   task: NonNullable<ReturnType<typeof nextPending>>,
+  implAction?: ResolvedAction,
 ): Promise<{ status: "done" | "failed"; tasks: TaskGraph; error?: string }> {
   const job = await loadJob(state.jobId);
   if (!job?.worktreePath) return { status: "failed", tasks: state.tasks!, error: "no worktree" };
@@ -440,13 +466,16 @@ async function runOneTask(
 
   try {
     const prior = await loadLaneContext(state.jobId);
-    const prompt = `${formatContextBlock(prior)}\n${wrapUntrusted("task", JSON.stringify(task))}\nFR: ${JSON.stringify(state.fr?.summary)}\nSpec modules: ${JSON.stringify(state.spec?.modules)}`;
+    const prompt = withActionPrompt(
+      `${formatContextBlock(prior)}\n${wrapUntrusted("task", JSON.stringify(task))}\nFR: ${JSON.stringify(state.fr?.summary)}\nSpec modules: ${JSON.stringify(state.spec?.modules)}`,
+      implAction?.prompt,
+    );
     if (harnessId === "inprocess") {
       startSession(state.jobId, state.projectId, "implementation", getJobModel(state.jobId));
       await completeText({
         jobId: state.jobId,
         maxSteps: 20,
-        system: `${skillFor("implementation")}\n\nEdit only the product files this task needs, gitCommit, then stop. A successful commit ends this task. Do not add .factory/ plans or specs.`,
+        system: `${skillFor("implementation", implAction?.skill)}\n\nEdit only the product files this task needs, gitCommit, then stop. A successful commit ends this task. Do not add .factory/ plans or specs.`,
         prompt,
         tools: {
           ...ticketTools(state.jobId),
@@ -475,6 +504,7 @@ async function runOneTask(
         projectId: state.projectId,
         context: prior,
         schema: z.unknown(),
+        skill: implAction?.skill,
         userPrompt: prompt,
         write: true,
       });
@@ -498,6 +528,7 @@ async function runOneTask(
   }
   if (end.stdout.trim() !== startHead) return mark("done");
   if (await filesAlreadyOnBranch(worktree, task.files)) return mark("done");
+  if (!task.files.length) return mark("done");
   return mark("failed", "task finished without a new commit");
 }
 
@@ -531,9 +562,9 @@ async function implementationNode(state: FactoryStateType, resolved: ResolvedPip
     lastActiveState: implLane?.id ?? "implementation",
     boardColumn: implLane?.column ?? "implementation",
   });
-  let result = await runOneTask(state, task);
+  let result = await runOneTask(state, task, implAction);
   if (result.status === "failed" && result.error !== "no worktree" && result.error !== "Agent model is not configured") {
-    result = await runOneTask({ ...state, tasks: result.tasks }, task);
+    result = await runOneTask({ ...state, tasks: result.tasks }, task, implAction);
   }
   await writeArtifact({
     jobId: state.jobId,
@@ -612,13 +643,40 @@ async function reviewDraft(
       projectId: state.projectId,
       context: await loadLaneContext(state.jobId),
       schema: ReviewReportSchema,
-      userPrompt: `Review this implementation against the spec, then submitArtifact with summary, verdict, findings, filesChanged.\nSpec: ${JSON.stringify(state.spec)}\nTasks: ${JSON.stringify(state.tasks)}\nDiff:\n${wrapUntrusted("diff", computedDiffs[0]?.diff ?? "")}`,
+      ...actionHarness(
+        resolved,
+        node,
+        `Review this implementation against the spec, then submitArtifact with summary, verdict, findings, filesChanged.\nSpec: ${JSON.stringify(state.spec)}\nTasks: ${JSON.stringify(state.tasks)}\nDiff:\n${wrapUntrusted("diff", computedDiffs[0]?.diff ?? "")}`,
+      ),
     })).artifact;
     drafted = { ...object, computedDiffs };
     await writeArtifact({ jobId: state.jobId, kind: "review", source: "agent", body: drafted });
     await writeLaneContext(state.jobId, contextFromReview(drafted));
   }
   return advanceFrom(state, resolved, node, { review: drafted }, drafted);
+}
+
+async function inspectGate(
+  state: FactoryStateType,
+  resolved: ResolvedPipeline,
+  node: string,
+) {
+  const action = resolved.actionByNode.get(node);
+  const decision = interrupt({ gate: action?.gate ?? action?.laneId ?? "implementation" }) as HitlResume;
+  if (decision.action === "reject") return { stage: "rejected" };
+  if (decision.action === "send_back") {
+    const destId = action?.sendBackTo ?? "implementation";
+    const dest = firstActionOf(resolved, destId);
+    const destLane = resolved.laneById.get(destId);
+    await persistJob(state.jobId, {
+      state: destLane?.state ?? destId,
+      lastActiveState: destLane?.id ?? destId,
+      boardColumn: destLane?.column ?? "implementation",
+      implStartedAt: nowIso(),
+    });
+    return { stage: dest?.graphNode ?? destId };
+  }
+  return advanceFrom(state, resolved, node, {});
 }
 
 async function reviewGate(
@@ -744,7 +802,10 @@ async function pullRequestNode(
         projectId: state.projectId,
         context: await loadLaneContext(state.jobId),
         schema: PullRequestDraftSchema,
-        userPrompt: `Write a pull-request title and markdown body a human can review quickly.
+        ...actionHarness(
+          resolved,
+          node,
+          `Write a pull-request title and markdown body a human can review quickly.
 The GitHub PR must include only the required product files from this ticket. Do not add, list as shipped, or describe factory working notes under .factory/ (requirements, tech spec, visual plans, tasks.json, review docs).
 Branch: ${branch} (${branchNote}). Base: ${project.defaultBranch}.
 Ticket: ${job.issueTitle}
@@ -754,6 +815,7 @@ Spec: ${JSON.stringify(state.spec?.summary)}
 Tasks: ${JSON.stringify(state.tasks?.tasks.map((t) => `${t.id} ${t.title} (${t.status})`))}
 Review: ${JSON.stringify(state.review?.summary)}
 Diff:\n${wrapUntrusted("diff", diff.slice(0, 40_000))}`,
+        ),
       })).artifact;
       await writeArtifact({ jobId: state.jobId, kind: "pr", source: "agent", body: draft });
     }
@@ -869,11 +931,14 @@ async function fixNode(
   if (job.worktreePath) {
     const worktree = job.worktreePath;
     const harnessId = await resolveJobHarness(state.projectId, "fix");
-    const prompt = `${formatContextBlock(await loadLaneContext(state.jobId))}\nReview:\n${JSON.stringify({
-      verdict: review.verdict,
-      summary: review.summary,
-      findings,
-    })}\nSpec: ${JSON.stringify(state.spec?.summary)}`;
+    const prompt = withActionPrompt(
+      `${formatContextBlock(await loadLaneContext(state.jobId))}\nReview:\n${JSON.stringify({
+        verdict: review.verdict,
+        summary: review.summary,
+        findings,
+      })}\nSpec: ${JSON.stringify(state.spec?.summary)}`,
+      action?.prompt,
+    );
     try {
       if (harnessId !== "inprocess") {
         await runLaneHarness({
@@ -882,6 +947,7 @@ async function fixNode(
           projectId: state.projectId,
           context: await loadLaneContext(state.jobId),
           schema: z.unknown(),
+          skill: action?.skill,
           userPrompt: prompt,
           write: true,
         });
@@ -944,6 +1010,10 @@ function routeAfterNode(s: FactoryStateType): string {
   return s.stage;
 }
 
+function isCompiledGraphNode(resolved: ResolvedPipeline, node: string): boolean {
+  return resolved.actionByNode.get(node)?.type !== "publish";
+}
+
 /** START must not always launch triage — Command({ goto }) re-enters START in the same step. */
 export function routeFromStart(
   s: Pick<FactoryStateType, "stage">,
@@ -952,7 +1022,7 @@ export function routeFromStart(
   const stage = s.stage;
   if (!stage || stage === resolved.firstAgentNode) return resolved.firstAgentNode;
   if (stage === "handoff" || stage === "done" || stage === "rejected") return END;
-  if (resolved.graphNodes.includes(stage)) return stage;
+  if (resolved.graphNodes.includes(stage) && isCompiledGraphNode(resolved, stage)) return stage;
   return resolved.firstAgentNode;
 }
 
@@ -984,7 +1054,7 @@ function handlerForAction(resolved: ResolvedPipeline, action: ResolvedAction) {
     if (action.gate === "pr" || action.artifact === "pr" || action.laneId === "pull_request") {
       return (s: FactoryStateType) => pullRequestGate(s, resolved);
     }
-    return (s: FactoryStateType) => reviewGate(s, resolved, node);
+    return (s: FactoryStateType) => inspectGate(s, resolved, node);
   }
   if (action.type === "publish") {
     return (s: FactoryStateType) => pullRequestGate(s, resolved);
@@ -1018,7 +1088,9 @@ function destMapFor(resolved: ResolvedPipeline, node: string): Record<string, st
   }
   for (const n of resolved.graphNodes) dests.add(n);
   const map: Record<string, string> = { [END]: END };
-  for (const d of dests) map[d] = d;
+  for (const d of dests) {
+    if (d === END || isCompiledGraphNode(resolved, d)) map[d] = d;
+  }
   return map;
 }
 
@@ -1047,7 +1119,9 @@ export function compileFactoryGraph(
   }
 
   const startPaths: Record<string, string> = { [END]: END };
-  for (const n of resolved.graphNodes) startPaths[n] = n;
+  for (const n of resolved.graphNodes) {
+    if (isCompiledGraphNode(resolved, n)) startPaths[n] = n;
+  }
   startPaths[resolved.firstAgentNode] = resolved.firstAgentNode;
 
   g = g.addConditionalEdges(

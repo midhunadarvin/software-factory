@@ -7,6 +7,7 @@ import { z } from "zod";
 import { encryptPat, decryptPat } from "../../crypto/pat";
 import { deriveKeys } from "../../crypto/hkdf";
 import { projects, jobs } from "../../db/schema";
+import { listFolders } from "../../git/list-folders";
 import { validateGitPath } from "../../git/validate";
 import { runGit } from "../../git/exec";
 import { gitEnvWithAskpass } from "../../git/askpass";
@@ -33,13 +34,15 @@ import {
 } from "../../runtime/pipeline";
 import {
   HARNESS_IDS,
+  detectCliHarnesses,
   harnessFromProject,
   listHarnesses,
   parseHarnessConfig,
   type HarnessId,
 } from "../../runtime/harness";
 
-function publicProject(p: typeof projects.$inferSelect) {
+async function publicProject(p: typeof projects.$inferSelect) {
+  await detectCliHarnesses();
   const resolved = resolvePipeline(pipelineFromProject(p));
   return {
     id: p.id,
@@ -64,19 +67,22 @@ function publicProject(p: typeof projects.$inferSelect) {
 export const projectsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     const rows = await ctx.db.select().from(projects);
-    return rows.map(publicProject);
+    return Promise.all(rows.map(publicProject));
   }),
   get: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
     const p = (await ctx.db.select().from(projects).where(eq(projects.id, input.id)))[0];
     if (!p) throw new TRPCError({ code: "NOT_FOUND" });
     return {
-      ...publicProject(p),
+      ...(await publicProject(p)),
       origin: loadEnv().origin.split(",")[0]?.trim() || "http://localhost:3000",
     };
   }),
   validatePath: protectedProcedure
     .input(z.object({ rootPath: z.string().min(1) }))
     .query(async ({ input }) => validateGitPath(input.rootPath)),
+  listFolders: protectedProcedure
+    .input(z.object({ dir: z.string().optional() }))
+    .query(({ input }) => listFolders(input.dir)),
   openLocal: protectedProcedure
     .input(
       z.object({

@@ -15,7 +15,7 @@ This is a **single-tenant** app (one operator, local or VPS). It is not a multi-
 - Implementation in an isolated linked worktree (`var/worktrees/`) — your current branch is not touched
 - Plugin intake: GitHub, Linear, Jira; add more without a new webhook route file
 - Plugin LLM backends: paste a key (OpenCode Go by default) and pick from `GET /v1/models`
-- Optional lane harnesses: in-process (default) or a terminal CLI (`claude`, `cursor-agent`, `codex`) in the job worktree
+- Lane harnesses: `claude` / `cursor-agent` / `codex` on PATH (default), or in-process with an LLM API key
 - Durable board: SQLite + LangGraph checkpoints survive `pnpm dev` / container restarts
 
 ## Requirements
@@ -30,11 +30,12 @@ git clone https://github.com/midhunadarvin/software-factory.git
 cd software-factory
 pnpm install
 cp .env.example .env
-# set FACTORY_SECRET (64 hex chars), FACTORY_APP_PASSWORD, and FACTORY_LLM_API_KEY
+# set FACTORY_SECRET (64 hex chars) and FACTORY_APP_PASSWORD
+# optional FACTORY_LLM_API_KEY unless you use in-process lanes (claude/cursor-agent on PATH is enough)
 pnpm dev
 ```
 
-The factory **will not attach repos or create jobs** until an LLM API key is set and `GET {provider}/v1/models` succeeds. Restart after changing env.
+The factory **will not attach repos or create jobs** until a coding CLI (`claude` or `cursor-agent`) is on PATH, or an LLM API key is set and `GET {provider}/v1/models` succeeds. Restart after changing env or installing a CLI.
 
 A generic key (`FACTORY_LLM_API_KEY` or `OPENAI_API_KEY`) defaults to **OpenCode Go** and lists every model that key can use. Optional:
 
@@ -60,7 +61,7 @@ Open http://127.0.0.1:3000 — log in, then **Open a repository**.
 7. Implementation runs in a linked worktree under `var/worktrees/` (your checkout is not touched).
 8. Approve review. Local-only repos finish with a branch; GitHub + PAT opens a pull request.
 
-Without a working agent key the UI shows a blocking error and all create/attach mutations fail.
+Without a coding CLI on PATH or a working agent key the UI shows a blocking error and all create/attach mutations fail.
 
 ## Self-host and webhooks
 

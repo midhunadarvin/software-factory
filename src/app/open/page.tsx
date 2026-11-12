@@ -6,12 +6,17 @@ import { FolderGit2, GitBranch, ChevronRight } from "lucide-react";
 import { trpc } from "@/lib/trpc/client";
 import { AppHeader } from "@/components/AppChrome";
 import { AgentGate } from "@/components/AgentGate";
+import { FolderPicker } from "@/components/FolderPicker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+
+function folderName(p: string) {
+  return p.split(/[/\\]/).filter(Boolean).pop() ?? "";
+}
 
 export default function OpenPage() {
   const router = useRouter();
@@ -94,10 +99,13 @@ export default function OpenPage() {
                   <Input placeholder="my-app" value={name} onChange={(e) => setName(e.target.value)} />
                 </Field>
                 <Field label="Absolute path">
-                  <Input
+                  <FolderPicker
                     placeholder="/Users/you/src/repo"
                     value={rootPath}
-                    onChange={(e) => setRootPath(e.target.value)}
+                    onChange={(next) => {
+                      setRootPath(next);
+                      setName((current) => current || folderName(next));
+                    }}
                   />
                 </Field>
                 <Field label="GitHub PAT · optional">
@@ -152,10 +160,10 @@ export default function OpenPage() {
                   />
                 </Field>
                 <Field label="Clone destination · optional">
-                  <Input
+                  <FolderPicker
                     placeholder="~/software-factory/repos/…"
                     value={dest}
-                    onChange={(e) => setDest(e.target.value)}
+                    onChange={setDest}
                   />
                 </Field>
                 <Field label="GitHub PAT">

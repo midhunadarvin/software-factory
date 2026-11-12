@@ -19,7 +19,7 @@ export function IntakeLaunch({
   className?: string;
 }) {
   const utils = trpc.useUtils();
-  const catalog = trpc.agent.models.useQuery();
+  const catalog = trpc.agent.models.useQuery({ jobId });
   const send = trpc.jobs.sendToTriage.useMutation({
     onSuccess: () => {
       void utils.jobs.list.invalidate();
@@ -33,19 +33,26 @@ export function IntakeLaunch({
       void utils.jobs.get.invalidate({ id: jobId });
     },
   });
-  const [model, setLocal] = useState(currentModel ?? "");
+  const [model, setLocal] = useState("");
+  const models = catalog.data?.models ?? [];
+  const catalogIds = models.map((m) => m.id);
   useEffect(() => {
-    if (currentModel) setLocal(currentModel);
-    else if (!model && catalog.data?.defaultModel) setLocal(catalog.data.defaultModel);
-  }, [currentModel, catalog.data?.defaultModel, model]);
-  const models = catalog.data?.models ?? (model ? [{ id: model, style: "chat" as const }] : []);
-  const selected = model || catalog.data?.defaultModel || "";
+    const ids = catalog.data?.models.map((m) => m.id) ?? [];
+    if (currentModel && (!ids.length || ids.includes(currentModel))) {
+      setLocal(currentModel);
+      return;
+    }
+    if (catalog.data?.defaultModel) setLocal(catalog.data.defaultModel);
+  }, [currentModel, catalog.data]);
+  const selected =
+    (model && (!catalogIds.length || catalogIds.includes(model)) ? model : "") || catalog.data?.defaultModel || "";
 
   return (
     <div className={cn("flex flex-col gap-2", className)} onClick={(e) => e.stopPropagation()}>
       {!compact && (
         <Label htmlFor={`intake-model-${jobId}`} className="text-xs">
           Model for this ticket
+          {catalog.data?.provider?.label ? ` · ${catalog.data.provider.label}` : ""}
         </Label>
       )}
       <select

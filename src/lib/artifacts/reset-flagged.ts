@@ -38,7 +38,7 @@ export function nextPending(graph: TaskGraph) {
   const byId = new Map(graph.tasks.map((t) => [t.id, t]));
   return (
     graph.tasks.find((t) => {
-      if (t.status !== "pending") return false;
+      if (t.status !== "pending" && t.status !== "in_progress") return false;
       return t.dependsOn.every((d) => byId.get(d)?.status === "done");
     }) ?? null
   );

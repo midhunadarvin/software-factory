@@ -14,12 +14,21 @@ export type LaneRunRequest = {
   cwd: string | null;
   brief: string;
   userPrompt: string;
+  skill?: string;
+  model?: string;
   context: LaneContext | null;
   steer?: boolean;
   resumeSessionId?: string;
   artifact?: ArtifactKind;
   schema?: ZodTypeAny;
   write?: boolean;
+};
+
+export type HarnessModel = { id: string; name?: string };
+
+export type HarnessModelList = {
+  models: HarnessModel[];
+  defaultModel?: string;
 };
 
 export type HarnessResult = {
@@ -42,6 +51,7 @@ export type HarnessPlugin = {
   label: string;
   description: string;
   detect: () => Promise<HarnessDetect>;
+  listModels?: () => Promise<HarnessModelList>;
   start: (req: LaneRunRequest) => Promise<HarnessSession>;
 };
 

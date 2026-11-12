@@ -22,9 +22,9 @@ export function HarnessSettings({
       <CardHeader>
         <CardTitle>Lane agent harness</CardTitle>
         <CardDescription>
-          Each lane can run an in-process model or a terminal CLI (`claude`, `cursor-agent`, `codex`) in
-          the job worktree. In-process is the default. The factory still owns the pipeline, brief, and
-          Approve.
+          Each lane runs a terminal CLI (`claude`, `cursor-agent`, `codex`) in the job worktree when that
+          binary is on PATH. In-process is the fallback and needs an LLM API key. The factory still owns
+          the pipeline, brief, and Approve.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
