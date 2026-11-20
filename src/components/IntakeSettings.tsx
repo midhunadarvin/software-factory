@@ -4,8 +4,8 @@ import { useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { pluginSettings, type IntakeConfig } from "@/lib/intake/settings";
-import type { PublicIntegration } from "@/lib/integrations/types";
+import { pluginSettings, type IntakeConfig } from "@/server/integrations/intake/settings";
+import type { PublicIntegration } from "@/server/integrations/types";
 
 export function IntakeSettings({
   origin,

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Send } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";

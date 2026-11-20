@@ -2,10 +2,10 @@
 
 import { useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
+import { cn } from "@/utils/cn";
 
 export function IntakeLaunch({
   jobId,

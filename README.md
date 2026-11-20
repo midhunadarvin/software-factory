@@ -74,14 +74,9 @@ docker compose up --build -d
 
 Health: `GET /api/health` (`db: true`).
 
-## Agent SDK
+## Lane agents
 
-Lane agents (prompts, ids, tool kits) live in [`packages/agent-sdk`](./packages/agent-sdk) (`@software-factory/agent-sdk`). The factory imports that package. Add or change an agent there and bump the workspace dependency — do not paste skills into `src/lib/runtime`.
-
-```sh
-pnpm add @software-factory/agent-sdk   # consumers
-# this repo: workspace:*
-```
+Lane agents (prompts, ids, tool kits) live in [`src/server/agents`](./src/server/agents). Add or change an agent there with `registerAgent` / `catalog.ts` — do not paste skills into `src/server/runtime`.
 
 ## Scripts
 

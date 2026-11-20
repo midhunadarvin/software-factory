@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { TriangleAlert } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
 export function AgentGate({ children }: { children: ReactNode }) {

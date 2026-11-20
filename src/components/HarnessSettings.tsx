@@ -1,9 +1,9 @@
 "use client";
 
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import type { HarnessId } from "@/lib/runtime/harness/types";
+import type { HarnessId } from "@/server/agents/harness/types";
 
 export function HarnessSettings({
   projectId,
@@ -37,7 +37,7 @@ export function HarnessSettings({
             onChange={(e) => {
               const next = e.target.value as HarnessId;
               update.mutate(
-                { id: projectId, harness: { default: next, byLane: value.byLane } },
+                { id: projectId, harness: { default: next, byLane: definedLanes(value.byLane) } },
                 { onSuccess: () => void utils.projects.get.invalidate({ id: projectId }) },
               );
             }}
@@ -61,5 +61,11 @@ export function HarnessSettings({
         </ul>
       </CardContent>
     </Card>
+  );
+}
+
+function definedLanes(byLane: Partial<Record<string, HarnessId>>): Record<string, HarnessId> {
+  return Object.fromEntries(
+    Object.entries(byLane).filter((e): e is [string, HarnessId] => e[1] !== undefined),
   );
 }

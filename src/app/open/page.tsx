@@ -3,7 +3,7 @@
 import { useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { FolderGit2, GitBranch, ChevronRight } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { AppHeader } from "@/components/AppChrome";
 import { AgentGate } from "@/components/AgentGate";
 import { FolderPicker } from "@/components/FolderPicker";
@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { cn } from "@/lib/utils";
+import { cn } from "@/utils/cn";
 
 function folderName(p: string) {
   return p.split(/[/\\]/).filter(Boolean).pop() ?? "";

@@ -24,7 +24,7 @@ These are product constraints, not style nits:
 - A second database, queue, or UI framework
 - A new webhook route file (`/api/webhooks/<name>/route.ts`) — use an `IntegrationPlugin` instead
 - A second way to define pipeline lanes (hardcoded LangGraph node names for new lanes)
-- Client components that import Node-only modules (`better-sqlite3`, `db/client`, `integrations/registry.ts`)
+- Client components that import Node-only modules (`better-sqlite3`, `@/server/data` runtime exports, `integrations/registry.ts`)
 - Committing `var/` or `.env`
 
 See [AGENTS.md](./AGENTS.md) for the full list.
@@ -46,7 +46,7 @@ Details: [docs/DEVELOPER.md](./docs/DEVELOPER.md).
 1. Fork and branch from the default branch. Name branches after the change (`fix/session-cookie`, `docs/webhooks`).
 2. Keep the diff small. One concern per PR.
 3. Colocate tests as `*.test.ts` next to the code. Assert behavior, not implementation diary.
-4. Schema changes update **both** `src/lib/db/schema.ts` and `src/lib/db/migrate.ts` (`ALTER TABLE … ADD`, idempotent).
+4. Schema changes update **both** `src/server/data/drivers/sqlite/schema.ts` and `src/server/data/drivers/sqlite/migrate.ts` (`ALTER TABLE … ADD`, idempotent).
 5. Do not stage `.factory/` notes or anything under `var/`.
 6. Fill in the pull request template. Link the issue if there is one.
 7. Maintainers run CI (`pnpm test`, `pnpm typecheck`). Fix failures on your branch.

@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 import { parse } from "node:url";
 import next from "next";
-import { loadDotenv } from "./lib/load-dotenv";
-import { loadEnv } from "./lib/env";
-import { migrate } from "./lib/db/migrate";
-import { getRuntime } from "./lib/runtime";
+import { loadDotenv } from "./utils/load-dotenv";
+import { loadEnv } from "./utils/env";
+import { getStore } from "./server/data";
+import { getRuntime } from "./server/runtime";
 
 loadDotenv();
 const env = loadEnv();
@@ -12,7 +12,7 @@ const dev = process.env.NODE_ENV !== "production";
 const hostname = env.bindHost;
 const port = env.bindPort;
 
-migrate();
+await getStore().migrate();
 const runtime = getRuntime();
 await runtime.start();
 

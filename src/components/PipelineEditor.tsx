@@ -7,8 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { defaultSkillForAction, storedSkillForAction } from "@/lib/runtime/pipeline/action-skill";
-import { ACTION_TYPES, type ActionType, type LaneConfig, type PipelineConfig } from "@/lib/runtime/pipeline/schema";
+import { defaultSkillForAction, storedSkillForAction } from "@/server/pipeline/action-skill";
+import { ACTION_TYPES, type ActionType, type LaneConfig, type PipelineConfig } from "@/server/pipeline/schema";
 
 const ACTION_LABELS: Record<ActionType, string> = {
   produce: "Produce artifact",

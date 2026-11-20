@@ -1,6 +1,6 @@
 import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
-import { createContext } from "@/lib/trpc/init";
-import { appRouter } from "@/lib/trpc/router";
+import { createContext } from "@/server/trpc/init";
+import { appRouter } from "@/server/trpc/router";
 
 export const runtime = "nodejs";
 

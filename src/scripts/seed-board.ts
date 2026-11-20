@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { getDb } from "../lib/db/client";
-import { migrate } from "../lib/db/migrate";
-import { jobs, projects } from "../lib/db/schema";
-import { nowIso } from "../lib/paths";
+import { getStore } from "../server/data";
+import { nowIso } from "../utils/paths";
 
-migrate();
-const db = getDb();
-const existing = await db.select().from(projects);
+const store = getStore();
+await store.migrate();
+const existing = await store.projects.list();
 if (existing.length === 0) {
   console.log("create a project first (open a repo in the UI)");
   process.exit(0);
@@ -23,7 +21,7 @@ const states = [
 ] as const;
 let n = -100;
 for (const [state, col] of states) {
-  await db.insert(jobs).values({
+  await store.jobs.insert({
     id: randomUUID(),
     projectId: project.id,
     issueNumber: n--,

@@ -54,7 +54,7 @@ pnpm db:migrate   # apply SQLite DDL / ALTERs (also runs on boot)
 `src/server.ts` is the only entry:
 
 1. Load `.env`, validate secrets
-2. `migrate()` SQLite
+2. `getStore().migrate()` (SQLite by default)
 3. `FactoryRuntime.start()`
 4. Next.js request handler on the same HTTP server
 
@@ -66,19 +66,28 @@ Do not add a second Node service, worker, or database.
 |---|---|
 | Pages / API routes | `src/app/` |
 | UI | `src/components/` |
-| tRPC | `src/lib/trpc/routers/` |
-| Jobs, graph, lanes | `src/lib/runtime/` |
-| Pipeline config | `src/lib/runtime/pipeline/` |
-| New issue tracker | `src/lib/integrations/plugins/` + `registerIntegration` |
-| New LLM backend | `src/lib/llm/plugins/` + `registerLlmProvider` |
-| Schema | `src/lib/db/schema.ts` **and** `src/lib/db/migrate.ts` |
+| tRPC | `src/server/trpc/routers/` |
+| Job lifecycle (ticket state, board columns, PR publishing) | `src/server/jobs/` |
+| Runtime (FactoryRuntime, LangGraph graph, queue, live events) | `src/server/runtime/` |
+| Pipeline config and lanes | `src/server/pipeline/` |
+| Artifacts (schemas, coercion, templates, versioned store) | `src/server/artifacts/` |
+| Lane agents (prompts, catalog, lane runner, steer, sessions) | `src/server/agents/` |
+| Agent tools (repo, review, sandbox) | `src/server/tools/` |
+| Integrations, intake config, webhooks | `src/server/integrations/` |
+| Generic helpers (auth, crypto, git, GitHub, env, paths, redact) | `src/utils/` — no product logic |
+| New issue tracker | `src/server/integrations/plugins/` + `registerIntegration` |
+| LLM calls, job model, parsing | `src/server/llm/` |
+| New LLM backend | `src/server/llm/providers/plugins/` + `registerLlmProvider` |
+| Data models | `src/server/data/models/` |
+| Data access | `getStore()` from `src/server/data` |
+| Schema | `src/server/data/drivers/sqlite/schema.ts` **and** `src/server/data/drivers/sqlite/migrate.ts` |
 | Tests | colocated `*.test.ts` |
 
 Path alias: `@/` → `src/`.
 
 ### Client vs server
 
-Client components **must not** import Node-only modules (`better-sqlite3`, `db/client`, `integrations/registry.ts`, `llm/registry.ts`). Use `src/lib/intake/settings.ts` and data from tRPC.
+Client components **must not** import Node-only modules (`better-sqlite3`, `@/server/data` runtime exports, `integrations/registry.ts`, `llm/providers/registry.ts`). Use `src/server/integrations/intake/settings.ts` and data from tRPC.
 
 ### Persistence
 
@@ -93,22 +102,56 @@ Everything durable lives under `{FACTORY_ROOT}/var/` (gitignored):
 
 Never invent another store. Never commit `var/`.
 
+### Source layout
+
+```
+src/
+├── app/, components/   Next.js pages, API routes, UI
+├── server/             the product
+│   ├── jobs/           ticket state, board columns, PR publishing
+│   ├── runtime/        FactoryRuntime, LangGraph graph, queue, live events
+│   ├── pipeline/       pipeline config, lanes, lane ids
+│   ├── artifacts/      artifact schemas, coercion, templates, store, fixtures
+│   ├── agents/         lane agents, catalog, steer, sessions, harness/ (CLI runners)
+│   ├── tools/          tools agents call (repo, review, sandbox)
+│   ├── integrations/   issue trackers, intake/, webhooks/
+│   ├── llm/            provider plugins, job model, output parsing
+│   ├── data/           data access layer (below)
+│   └── trpc/           API routers
+├── utils/              generic helpers: auth, crypto, git, github, obs, env, paths, trpc client
+└── server.ts           process entry
+```
+
+`src/layers.test.ts` enforces the data and LLM boundaries.
+
+### Data access layer
+
+```
+src/server/data/
+├── models/          Project, Job, Artifact, AgentEvent (plain types)
+├── repositories.ts  ProjectRepo, JobRepo, ArtifactRepo, EventRepo, DataStore
+├── drivers/sqlite/  Drizzle schema, migrate, repo implementations, checkpointer
+└── index.ts         getStore() / closeStore()
+```
+
+Code outside `src/server/data` calls `getStore()` (or `ctx.store` in tRPC) and never imports `drizzle-orm` or `better-sqlite3`; `src/layers.test.ts` fails the build otherwise. `FACTORY_DB` selects the driver (default `sqlite`). To add a backend, implement `DataStore` under `src/server/data/drivers/<name>/` and register it in `src/server/data/index.ts`.
+
 Implementation runs in a **linked worktree** under `var/worktrees/`. Do not implement on the operator’s current checkout branch. Product git commits must not include `.factory/` notes (`requirements`, specs, `tasks.json`, `review.md`).
 
 ## Adding an intake plugin
 
 Webhooks already live at `POST /api/webhooks/[id]`. Do **not** add `/api/webhooks/<name>/route.ts`.
 
-1. Add `src/lib/integrations/plugins/<name>.ts` exporting an `IntegrationPlugin`:
+1. Add `src/server/integrations/plugins/<name>.ts` exporting an `IntegrationPlugin`:
 
    - `id` — snake_case (`asana`, `clickup`)
    - `secretEnv`, `verify`, `parse`, `match`, `settingsFields`
 
-2. Register it in `src/lib/integrations/registry.ts` (next to GitHub / Linear / Jira) or from `src/server.ts` **before** `runtime.start()`.
+2. Register it in `src/server/integrations/registry.ts` (next to GitHub / Linear / Jira) or from `src/server.ts` **before** `runtime.start()`.
 
 ```ts
-import { registerIntegration } from "@/lib/integrations";
-import { asanaPlugin } from "@/lib/integrations/plugins/asana";
+import { registerIntegration } from "@/server/integrations";
+import { asanaPlugin } from "@/server/integrations/plugins/asana";
 
 registerIntegration(asanaPlugin);
 ```
@@ -121,17 +164,17 @@ Operator-facing webhook URLs: [WEBHOOKS.md](./WEBHOOKS.md).
 
 `getModel()` must not grow per-vendor branches. A new backend is an `LlmProviderPlugin`.
 
-1. Add `src/lib/llm/plugins/<name>.ts` exporting an `LlmProviderPlugin`:
+1. Add `src/server/llm/providers/plugins/<name>.ts` exporting an `LlmProviderPlugin`:
 
    - `id` — snake_case (`openrouter`, `anthropic`)
    - `match`, `listModels`, `apiStyle`, `createModel`
-   - Reuse `createChatModel` / `createResponsesModel` / `createMessagesModel` from `@/lib/llm` when the host is OpenAI- or Anthropic-shaped
+   - Reuse `createChatModel` / `createResponsesModel` / `createMessagesModel` from `@/server/llm` when the host is OpenAI- or Anthropic-shaped
 
-2. Register it in `src/lib/llm/registry.ts` (next to OpenCode Go / xAI / OpenAI / custom) or from `src/server.ts` **before** `runtime.start()`.
+2. Register it in `src/server/llm/providers/registry.ts` (next to OpenCode Go / xAI / OpenAI / custom) or from `src/server.ts` **before** `runtime.start()`.
 
 ```ts
-import { registerLlmProvider } from "@/lib/llm";
-import { openrouterPlugin } from "@/lib/llm/plugins/openrouter";
+import { registerLlmProvider } from "@/server/llm";
+import { openrouterPlugin } from "@/server/llm/providers/plugins/openrouter";
 
 registerLlmProvider(openrouterPlugin);
 ```
@@ -142,22 +185,23 @@ Do **not** probe the same API key against multiple third-party hosts.
 
 ## Adding a pipeline lane or HITL step
 
-Use a pipeline **action** (`produce` / `implement` / `fix` / `human_approval` / `publish`) in `src/lib/runtime/pipeline/`. Do not hardcode a new LangGraph node name unless the default pipeline needs a stable checkpoint name.
+Use a pipeline **action** (`produce` / `implement` / `fix` / `human_approval` / `publish`) in `src/server/pipeline/`. Do not hardcode a new LangGraph node name unless the default pipeline needs a stable checkpoint name.
 
 ## Schema changes
 
-1. Update Drizzle types in `src/lib/db/schema.ts`.
-2. Add an idempotent `ALTER TABLE … ADD` (or `CREATE INDEX IF NOT EXISTS`) in `src/lib/db/migrate.ts`, wrapped in try/catch like the existing columns.
-3. Add or extend a colocated test if behavior depends on the new field.
-4. Document the operator impact in [MAINTENANCE.md](./MAINTENANCE.md) if `var/` on disk needs a one-off.
+1. Update the model type in `src/server/data/models/` and the Drizzle table in `src/server/data/drivers/sqlite/schema.ts` (a compile-time check fails if they drift).
+2. Add an idempotent `ALTER TABLE … ADD` (or `CREATE INDEX IF NOT EXISTS`) in `src/server/data/drivers/sqlite/migrate.ts`, wrapped in try/catch like the existing columns.
+3. If callers need a new query, add a method to the repo in `src/server/data/repositories.ts` and implement it in each driver.
+4. Add or extend a colocated test if behavior depends on the new field.
+5. Document the operator impact in [MAINTENANCE.md](./MAINTENANCE.md) if `var/` on disk needs a one-off.
 
-There is no generated migration folder. Boot always calls `migrate()`.
+There is no generated migration folder. Boot always calls `getStore().migrate()`.
 
 ## Tests
 
 - Runner: Vitest, Node environment, `src/**/*.test.ts`
 - Assert behavior (inputs/outputs, HTTP status, parsed artifacts), not call graphs
-- Prefer fixtures under `src/lib/runtime/` over hitting a live LLM
+- Prefer fixtures in `src/server/artifacts/fixtures.ts` over hitting a live LLM
 - After schema or env parsing changes, run `pnpm test && pnpm typecheck`
 
 ## Docker (dev check)

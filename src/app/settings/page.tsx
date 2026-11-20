@@ -3,7 +3,7 @@
 import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { AppHeader } from "@/components/AppChrome";
 import { AgentGate } from "@/components/AgentGate";
 import { Badge } from "@/components/ui/badge";

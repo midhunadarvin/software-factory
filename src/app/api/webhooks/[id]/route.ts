@@ -1,5 +1,5 @@
-import { handleIntegrationWebhook } from "@/lib/integrations/dispatch";
-import { ingestIncomingIssue } from "@/lib/webhooks/handle";
+import { handleIntegrationWebhook } from "@/server/integrations/dispatch";
+import { ingestIncomingIssue } from "@/server/integrations/webhooks/handle";
 
 export const runtime = "nodejs";
 

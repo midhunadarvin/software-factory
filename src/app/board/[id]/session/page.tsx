@@ -3,7 +3,7 @@
 import { useParams, useSearchParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ChevronRight, RotateCcw } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { AgentGate } from "@/components/AgentGate";
 import { AppHeader } from "@/components/AppChrome";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +12,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Label } from "@/components/ui/label";
 import { AgentRunControls } from "@/components/AgentRunControls";
 import { OpenWorktreeCard } from "@/components/OpenWorktree";
-import { FIRST_TOKEN_TIMEOUT_MS, firstTokenTimeoutMessage } from "@/lib/runtime/first-token";
+import { FIRST_TOKEN_TIMEOUT_MS, firstTokenTimeoutMessage } from "@/server/runtime/first-token";
 
 type Live = {
   lane: string;

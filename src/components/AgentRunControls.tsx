@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { Square, RotateCcw } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
-import { RESTART_STEPS } from "@/lib/runtime/lanes";
+import { RESTART_STEPS } from "@/server/pipeline/lanes";
 
 export function AgentRunControls({
   jobId,

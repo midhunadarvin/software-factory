@@ -3,7 +3,7 @@
 import { useSearchParams, useRouter } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { FolderGit2, Plus, Settings2 } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { Kanban } from "@/components/Kanban";
 import { AppHeader } from "@/components/AppChrome";
 import { AgentGate } from "@/components/AgentGate";

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { GitPullRequest } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+import { cn } from "@/utils/cn";
 import { IntakeLaunch } from "@/components/IntakeLaunch";
 
 export type BoardLane = { id: string; label: string; n: string };

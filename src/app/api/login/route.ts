@@ -1,6 +1,6 @@
-import { isLocked, recordFailure, recordSuccess } from "@/lib/auth/lockout";
-import { cookieHeader, issueSession, passwordsMatch } from "@/lib/auth/session";
-import { loadEnv } from "@/lib/env";
+import { isLocked, recordFailure, recordSuccess } from "@/utils/auth/lockout";
+import { cookieHeader, issueSession, passwordsMatch } from "@/utils/auth/session";
+import { loadEnv } from "@/utils/env";
 
 export const runtime = "nodejs";
 

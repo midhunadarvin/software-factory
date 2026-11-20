@@ -1,0 +1,450 @@
+import { TRPCError } from "@trpc/server";
+import { z } from "zod";
+import type { Job } from "../../data";
+import {
+  FunctionalRequirementsSchema,
+  PullRequestDraftSchema,
+  TaskGraphSchema,
+  TechnicalSpecSchema,
+} from "../../artifacts/schemas";
+import { resetFlaggedTasks } from "../../artifacts/reset-flagged";
+import { loadLatestArtifact, writeArtifact } from "../../artifacts/store";
+import { nowIso } from "../../../utils/paths";
+import { gcWorktree, getRuntime, retryImplementation } from "../../runtime";
+import { openWorktreeInEditor } from "../../runtime/open-editor";
+import { badgeFor, columnForState, gateForState, nextStateForApprove } from "../../jobs/states";
+import { loadPipelineForProject } from "../../pipeline";
+import { TriageReportSchema } from "../../artifacts/schemas";
+import { addJobWorktree, branchName } from "../../../utils/git/worktree";
+import { randomUUID } from "node:crypto";
+import { requireAgent } from "../require-agent";
+import { getSession, getSessionBundle } from "../../agents/session-store";
+import { SteerError } from "../../agents/steer";
+import { setJobModel } from "../../llm/model";
+import { resolveJobHarness, resolveLaneModel } from "../../agents/harness";
+import { displayLaneName, laneForJobState, nextLane } from "../../jobs/ticket";
+import { protectedProcedure, router } from "../init";
+
+function cardOf(
+  j: Job,
+  queued = false,
+  triage?: { classification: string; risk: string; fastTrack: boolean },
+  pipeline?: Parameters<typeof columnForState>[3],
+) {
+  return {
+    id: j.id,
+    projectId: j.projectId,
+    issueNumber: j.issueNumber,
+    title: j.issueTitle,
+    state: j.state,
+    column: columnForState(j.state, j.lastActiveState, j.boardColumn, pipeline),
+    model: j.model ?? null,
+    badge: badgeFor(j.state, queued),
+    local: j.issueNumber < 0,
+    issueUrl: j.issueUrl,
+    lastActiveState: j.lastActiveState,
+    tokensUsed: j.tokensUsed,
+    needsApproval: j.state.startsWith("awaiting_"),
+    branch: j.branch,
+    prUrl: j.prUrl,
+    error: j.error,
+    triage,
+  };
+}
+
+function parseArtifactForGate(gate: string, raw: unknown) {
+  if (gate === "requirements") return FunctionalRequirementsSchema.parse(raw);
+  if (gate === "tech_spec") return TechnicalSpecSchema.parse(raw);
+  if (gate === "tasks") return TaskGraphSchema.parse(raw);
+  if (gate === "pr") return PullRequestDraftSchema.parse(raw);
+  throw new Error("no client artifact for review");
+}
+
+export const jobsRouter = router({
+  create: protectedProcedure
+    .input(z.object({ projectId: z.string(), title: z.string().min(1), body: z.string().default("") }))
+    .mutation(async ({ input }) => {
+      const id = await getRuntime().createLocalJob(input.projectId, input.title, input.body);
+      return { id };
+    }),
+  sendToTriage: protectedProcedure
+    .input(z.object({ id: z.string(), model: z.string().min(1).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      await requireAgent();
+      const job = await ctx.store.jobs.get(input.id);
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      return getRuntime().sendToTriage(input.id, input.model);
+    }),
+  list: protectedProcedure
+    .input(z.object({ projectId: z.string(), states: z.array(z.string()).optional() }))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.store.jobs.list({ projectId: input.projectId });
+      const pipeline = await loadPipelineForProject(input.projectId);
+      const queued = getRuntime().queue.queued > 0;
+      const triageByJob = new Map<string, { classification: string; risk: string; fastTrack: boolean }>();
+      if (rows.length) {
+        const triages = await ctx.store.artifacts.listByKind("triage");
+        for (const row of triages) {
+          const parsed = TriageReportSchema.safeParse(JSON.parse(row.body));
+          if (!parsed.success) continue;
+          const prev = triageByJob.get(row.jobId);
+          if (!prev) triageByJob.set(row.jobId, parsed.data);
+        }
+      }
+      const runtime = getRuntime();
+      return rows
+        .filter((j) => !input.states || input.states.includes(j.state))
+        .map((j) => {
+          const card = cardOf(
+            j,
+            queued && (j.state === "inbox" || j.state === "triage"),
+            triageByJob.get(j.id),
+            pipeline,
+          );
+          const live = getSessionBundle(j.id, { refresh: true }).current;
+          const currentLane = laneForJobState(j.state, pipeline)?.key ?? j.state;
+          const liveMatchesColumn = Boolean(live?.lane && laneForJobState(live.lane, pipeline)?.column === card.column);
+          const awaiting = j.state.startsWith("awaiting_");
+          const finished = j.state === "done" || card.column === "done";
+          const running =
+            !finished &&
+            (runtime.isJobRunning(j.id) || (live?.status === "running" && liveMatchesColumn));
+          const agent =
+            finished
+              ? ("completed" as const)
+              : running
+                ? ("running" as const)
+                : awaiting
+                  ? ("idle" as const)
+                  : j.state === "failed" || (liveMatchesColumn && live?.status === "error")
+                    ? ("failed" as const)
+                    : liveMatchesColumn && live?.status === "done"
+                      ? ("completed" as const)
+                      : ("idle" as const);
+          return {
+            ...card,
+            agent,
+            agentLane: displayLaneName(currentLane, pipeline),
+          };
+        });
+    }),
+  session: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    const bundle = getSessionBundle(input.id);
+    const live = bundle.current ?? getSession(input.id);
+    const pipeline = await loadPipelineForProject(job.projectId);
+    const running =
+      job.state !== "done" &&
+      (getRuntime().isJobRunning(input.id) || live?.status === "running");
+    const status = (
+      job.state === "done"
+        ? "done"
+        : (live?.status ?? (job.error ? "error" : running ? "running" : "idle"))
+    ) as "running" | "done" | "error" | "idle";
+    const recentEvents = await ctx.store.events.listByJob(input.id, 20);
+    return {
+      jobId: input.id,
+      projectId: job.projectId,
+      lane: displayLaneName(job.state, pipeline),
+      sessionLane: live?.lane ?? job.state,
+      steerLane: job.state.startsWith("awaiting_") ? (laneForJobState(job.state, pipeline)?.key ?? null) : null,
+      turns: bundle.turns ?? [],
+      status,
+      thinking: live?.thinking ?? "",
+      text: live?.text ?? "",
+      tools: live?.tools ?? [],
+      error: live?.error ?? job.error ?? undefined,
+      running,
+      model: live?.model ?? job.model ?? undefined,
+      updatedAt: live?.updatedAt,
+      risk: live?.risk,
+      classification: live?.classification,
+      history: bundle.history,
+      debug: {
+        jobState: job.state,
+        lastActiveState: job.lastActiveState,
+        boardColumn: job.boardColumn,
+        jobError: job.error,
+        sessionError: live?.error,
+        sessionId: live?.id,
+        tools: live?.tools ?? [],
+        events: recentEvents.reverse().map((e) => ({
+          id: e.id,
+          level: e.level,
+          event: e.event,
+          payload: e.payload,
+          createdAt: e.createdAt,
+        })),
+      },
+    };
+  }),
+  setModel: protectedProcedure
+    .input(z.object({ id: z.string(), model: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const job = await ctx.store.jobs.get(input.id);
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      const current = laneForJobState(job.state);
+      const laneId =
+        !current || current.key === "intake"
+          ? current?.next ?? nextLane(job.state)?.key ?? "triage"
+          : current.key;
+      const harnessId = await resolveJobHarness(job.projectId, laneId);
+      const resolved = await resolveLaneModel(harnessId, input.model);
+      if (!resolved) throw new TRPCError({ code: "BAD_REQUEST", message: "no model for this harness" });
+      await setJobModel(input.id, resolved);
+      return { ok: true, model: resolved };
+    }),
+  steer: protectedProcedure
+    .input(z.object({ id: z.string().uuid(), message: z.string().min(1).max(8000) }))
+    .mutation(async ({ ctx, input }) => {
+      await requireAgent();
+      const job = await ctx.store.jobs.get(input.id);
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      try {
+        const result = await getRuntime().steerLane(input.id, input.message);
+        return { ok: true as const, lane: result.laneId };
+      } catch (err) {
+        if (err instanceof SteerError) {
+          const code =
+            err.code === "not_found"
+              ? "NOT_FOUND"
+              : err.code === "running"
+                ? "CONFLICT"
+                : "PRECONDITION_FAILED";
+          throw new TRPCError({ code, message: err.message });
+        }
+        throw err;
+      }
+    }),
+  stop: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    await getRuntime().stopAgent(input.id);
+    return { ok: true };
+  }),
+  restartFrom: protectedProcedure
+    .input(
+      z.object({
+        id: z.string(),
+        step: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      await requireAgent();
+      const job = await ctx.store.jobs.get(input.id);
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      await getRuntime().restartFromStep(input.id, input.step);
+      return { ok: true };
+    }),
+  retrySession: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    await requireAgent();
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    await getRuntime().retryLane(input.id);
+    return { ok: true };
+  }),
+  get: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    const j = await ctx.store.jobs.get(input.id);
+    if (!j) throw new TRPCError({ code: "NOT_FOUND" });
+    let interrupt: unknown = null;
+    try {
+      const snap = await getRuntime().getState(j.id);
+      interrupt = (snap as { interrupts?: unknown }).interrupts ?? null;
+    } catch {
+      interrupt = null;
+    }
+    const triageRow = await ctx.store.artifacts.latest(j.id, "triage");
+    const triageParsed = triageRow ? TriageReportSchema.safeParse(JSON.parse(triageRow.body)) : null;
+    const pipeline = await loadPipelineForProject(j.projectId);
+    return {
+      ...cardOf(j, false, triageParsed?.success ? triageParsed.data : undefined, pipeline),
+      issueBody: j.issueBody,
+      pendingArtifact: j.pendingArtifact,
+      worktreePath: j.worktreePath,
+      interrupt,
+    };
+  }),
+  artifacts: protectedProcedure.input(z.object({ id: z.string() })).query(async ({ ctx, input }) => {
+    return ctx.store.artifacts.listByJob(input.id);
+  }),
+  events: protectedProcedure
+    .input(z.object({ id: z.string(), after: z.string().optional() }))
+    .query(async ({ ctx, input }) => {
+      const rows = await ctx.store.events.listByJob(input.id, 200);
+      if (!input.after) return rows.reverse();
+      return rows.filter((r) => r.createdAt > input.after!).reverse();
+    }),
+  approve: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        action: z.enum(["approve", "reject", "send_back"]),
+        artifact: z.unknown().optional(),
+        note: z.string().max(4000).optional(),
+        draft: z.boolean().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const runtime = getRuntime();
+      const job = await ctx.store.jobs.get(input.id);
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      const pipeline = await loadPipelineForProject(job.projectId);
+      const gate = gateForState(job.state, pipeline);
+      if (!gate) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "job is not awaiting approval" });
+      }
+      const gateAction = pipeline.lanes
+        .flatMap((l) => l.actions)
+        .find((a) => a.type === "human_approval" && a.gate === gate);
+      if (input.action === "send_back" && !gateAction?.allowSendBack) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "send_back is not enabled at this gate" });
+      }
+      if ((input.action === "reject" || input.action === "send_back") && !input.note) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "note required" });
+      }
+      const nextState = nextStateForApprove(job.state, input.action, pipeline);
+      await runtime.withJobMutex(job.id, async () => {
+        const swapped = await ctx.store.jobs.updateIfState(input.id, job.state, { state: nextState, updatedAt: nowIso() });
+        if (!swapped) {
+          throw new TRPCError({ code: "CONFLICT", message: "state changed" });
+        }
+        const snap = await runtime.getState(job.id);
+        if (!runtime.hasInterrupt(snap)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: "thread is not interrupted; wait for boot 2x2 to re-park",
+          });
+        }
+        if (input.action === "reject") {
+          await runtime.resume(job.id, { action: "reject", note: input.note! });
+          return;
+        }
+        if (input.action === "send_back") {
+          const latestTasks = await loadLatestArtifact(job.id, "task_graph");
+          const latestReview = await loadLatestArtifact(job.id, "review");
+          let update: { tasks?: ReturnType<typeof resetFlaggedTasks> } = {};
+          if (latestTasks && latestReview) {
+            update = {
+              tasks: resetFlaggedTasks(
+                TaskGraphSchema.parse(latestTasks.parsed),
+                latestReview.parsed as never,
+              ),
+            };
+          }
+          await runtime.resume(job.id, { action: "send_back", note: input.note! }, update);
+          return;
+        }
+        if (gate === "review") {
+          await runtime.resume(job.id, { action: "approve", note: input.note });
+          return;
+        }
+        if (gate === "pr") {
+          const latest = await loadLatestArtifact(job.id, "pr");
+          const parsed = parseArtifactForGate("pr", input.artifact ?? latest?.parsed);
+          await writeArtifact({ jobId: job.id, kind: "pr", source: "human", body: parsed });
+          await runtime.resume(job.id, {
+            action: "approve",
+            artifact: parsed,
+            note: input.note,
+            draft: input.draft,
+          });
+          return;
+        }
+        const latestKind =
+          gate === "requirements" ? "fr" : gate === "tech_spec" ? "tech_spec" : "task_graph";
+        const latest = await loadLatestArtifact(job.id, latestKind);
+        const parsed = parseArtifactForGate(gate, input.artifact ?? latest?.parsed);
+        await writeArtifact({ jobId: job.id, kind: latestKind, source: "human", body: parsed });
+        await runtime.resume(job.id, { action: "approve", artifact: parsed, note: input.note });
+      });
+      return { ok: true };
+    }),
+  pause: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    if (job.state.startsWith("awaiting_") || job.state === "inbox" || job.state === "intake") return { ok: true };
+    await ctx.store.jobs.update(job.id, { state: "paused", updatedAt: nowIso(), lockedAt: null, lockedBy: null });
+    return { ok: true };
+  }),
+  resume: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    void getRuntime().invokeJob(job, "continue");
+    return { ok: true };
+  }),
+  cancel: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    if (job.state === "done") throw new TRPCError({ code: "PRECONDITION_FAILED" });
+    await getRuntime().abortJob(job.id);
+    return { ok: true };
+  }),
+  archive: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    await ctx.store.jobs.update(input.id, { archivedAt: nowIso() });
+    return { ok: true };
+  }),
+  delete: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    if (job.archivedAt) return { ok: true };
+    await getRuntime().deleteJob(job.id);
+    return { ok: true };
+  }),
+  reopen: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ ctx, input }) => {
+    const job = await ctx.store.jobs.get(input.id);
+    if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+    if (!["rejected", "failed"].includes(job.state)) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED" });
+    }
+    await gcWorktree(job.id);
+    await ctx.store.jobs.update(job.id, { archivedAt: nowIso() });
+    const project = (await ctx.store.projects.get(job.projectId))!;
+    const id = randomUUID();
+    const branch = branchName(job.issueNumber, job.issueTitle, id);
+    const now = nowIso();
+    await ctx.store.jobs.insert({
+      id,
+      projectId: job.projectId,
+      issueNumber: job.issueNumber,
+      issueTitle: job.issueTitle,
+      issueBody: job.issueBody,
+      issueUrl: job.issueUrl,
+      state: "intake",
+      lastActiveState: "intake",
+      boardColumn: "intake",
+      branch,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const dest = await addJobWorktree({
+      rootPath: project.rootPath,
+      projectId: project.id,
+      jobId: id,
+      branch,
+      defaultBranch: project.defaultBranch,
+    });
+    await ctx.store.jobs.update(id, { worktreePath: dest });
+    return { id };
+  }),
+  openWorktree: protectedProcedure
+    .input(z.object({ id: z.string(), editor: z.enum(["cursor", "vscode"]) }))
+    .mutation(async ({ ctx, input }) => {
+      const job = await ctx.store.jobs.get(input.id);
+      if (!job) throw new TRPCError({ code: "NOT_FOUND" });
+      if (!job.worktreePath) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "this ticket has no worktree yet" });
+      }
+      return openWorktreeInEditor(job.worktreePath, input.editor);
+    }),
+  retryImplementation: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ input }) => {
+      await retryImplementation(input.id);
+      return { ok: true };
+    }),
+  gcWorktree: protectedProcedure.input(z.object({ id: z.string() })).mutation(async ({ input }) => {
+    await gcWorktree(input.id);
+    return { ok: true };
+  }),
+});

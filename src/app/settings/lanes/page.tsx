@@ -3,13 +3,13 @@
 import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { AppHeader } from "@/components/AppChrome";
 import { AgentGate } from "@/components/AgentGate";
 import { PipelineEditor } from "@/components/PipelineEditor";
 import { SettingsNav } from "@/components/SettingsNav";
 import { Button } from "@/components/ui/button";
-import { DEFAULT_PIPELINE } from "@/lib/runtime/pipeline/default";
+import { DEFAULT_PIPELINE } from "@/server/pipeline/default";
 
 function LanesSettingsInner() {
   const params = useSearchParams();

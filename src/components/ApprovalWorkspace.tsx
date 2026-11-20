@@ -4,18 +4,18 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, RotateCcw, ExternalLink, Trash2, Radio } from "lucide-react";
 import { OpenWorktreeCard } from "@/components/OpenWorktree";
-import { trpc } from "@/lib/trpc/client";
+import { trpc } from "@/utils/trpc";
 import { AppHeader } from "@/components/AppChrome";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { cn } from "@/utils/cn";
 import { MdxPreview } from "@/components/MdxPreview";
 import { AgentRunControls } from "@/components/AgentRunControls";
 import { IntakeLaunch } from "@/components/IntakeLaunch";
 import { LaneChat } from "@/components/LaneChat";
-import { frMdx, prMarkdown, reviewMarkdown, specMdx, tasksMarkdown } from "@/lib/artifacts/templates";
+import { frMdx, prMarkdown, reviewMarkdown, specMdx, tasksMarkdown } from "@/server/artifacts/templates";
 
 type ArtifactRow = {
   id: string;

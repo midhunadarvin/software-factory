@@ -1,8 +1,6 @@
-import { getSqlite } from "@/lib/db/client";
-import { projects } from "@/lib/db/schema";
-import { gitOk } from "@/lib/git/exec";
-import { getDb } from "@/lib/db/client";
-import { getAgentStatus } from "@/lib/runtime/agent-status";
+import { getStore } from "@/server/data";
+import { gitOk } from "@/utils/git/exec";
+import { getAgentStatus } from "@/server/agents/status";
 
 export const runtime = "nodejs";
 
@@ -10,8 +8,9 @@ export async function GET() {
   let dbOk = false;
   let count = 0;
   try {
-    getSqlite();
-    count = (await getDb().select().from(projects)).length;
+    const store = getStore();
+    await store.ping();
+    count = (await store.projects.list()).length;
     dbOk = true;
   } catch {
     dbOk = false;

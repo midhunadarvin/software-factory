@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { cn } from "@/lib/utils";
+import { cn } from "@/utils/cn";
 
 const TABS = [
   { id: "project", href: "/settings", label: "Project" },

@@ -1,8 +1,6 @@
-import { and, desc, eq, gt } from "drizzle-orm";
-import { SESSION_COOKIE, verifySession } from "@/lib/auth/session";
-import { getDb } from "@/lib/db/client";
-import { agentEvents, projects } from "@/lib/db/schema";
-import { bus } from "@/lib/runtime/events";
+import { SESSION_COOKIE, verifySession } from "@/utils/auth/session";
+import { getStore } from "@/server/data";
+import { bus } from "@/server/runtime/events";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -17,7 +15,7 @@ export async function GET(req: Request) {
   const projectId = url.searchParams.get("projectId");
   const jobId = url.searchParams.get("jobId");
   if (!projectId) return new Response("projectId required", { status: 400 });
-  const p = (await getDb().select().from(projects).where(eq(projects.id, projectId)))[0];
+  const p = await getStore().projects.get(projectId);
   if (!p) return new Response("not found", { status: 404 });
 
   const last = req.headers.get("last-event-id");
@@ -27,19 +25,10 @@ export async function GET(req: Request) {
       const send = (id: string, type: string, data: unknown) => {
         controller.enqueue(encoder.encode(`id: ${id}\nevent: ${type}\ndata: ${JSON.stringify(data)}\n\n`));
       };
-      const db = getDb();
+      const events = getStore().events;
       const replay = last
-        ? await db
-            .select()
-            .from(agentEvents)
-            .where(and(eq(agentEvents.projectId, projectId), gt(agentEvents.id, last)))
-        : await db
-            .select()
-            .from(agentEvents)
-            .where(eq(agentEvents.projectId, projectId))
-            .orderBy(desc(agentEvents.createdAt))
-            .limit(50)
-            .then((r) => r.reverse());
+        ? await events.forProjectAfter(projectId, last)
+        : (await events.recentForProject(projectId, 50)).reverse();
       for (const e of replay) {
         let parsed: Record<string, unknown> = {};
         try {
@@ -50,7 +39,7 @@ export async function GET(req: Request) {
         send(e.id, e.event, { ...parsed, jobId: e.jobId });
       }
       if (jobId) {
-        const { getSession } = await import("@/lib/runtime/session-store");
+        const { getSession } = await import("@/server/agents/session-store");
         const live = getSession(jobId);
         if (live) send(`session-${jobId}`, "agent.session", live);
       }
